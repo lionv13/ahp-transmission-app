@@ -1,67 +1,23 @@
-import json, math
-from typing import Dict, List, Tuple
+
+# -*- coding: utf-8 -*-
+"""
+Streamlit AHP (Steps 1–2 visible, Steps 3–5 hidden)
+- Experts only enter pairwise comparisons for Importance and Likelihood (Saaty 1–9).
+- App computes AHP weights, consistency, and combined risk internally (hidden).
+- Output is an Excel file with raw and % weights, rankings, consistency, and aggregated matrices.
+- No JSON uploads/downloads involved.
+
+Run: streamlit run ahp_steps1_2_export_excel.py
+"""
+
+from __future__ import annotations
+import io
 import numpy as np
+import pandas as pd
 import streamlit as st
 
-# ---------------- AHP core ---------------- #
-RI = {1:0.00,2:0.00,3:0.58,4:0.90,5:1.12,6:1.24,7:1.32,8:1.41,9:1.45,10:1.49}
-
-def matrix_from_pairs(n:int, pairs:Dict[str,float])->np.ndarray:
-    A = np.ones((n,n), dtype=float)
-    for key,val in pairs.items():
-        i,j = map(int, key.split(','))
-        v = float(val); A[i,j]=v; A[j,i]=1.0/v
-    return A
-
-def principal_eigenvector(A:np.ndarray)->Tuple[np.ndarray,float]:
-    vals, vecs = np.linalg.eig(A)
-    k = np.argmax(np.real(vals)); lam = float(np.real(vals[k]))
-    v = np.abs(np.real(vecs[:,k])); w = v / v.sum()
-    return w, lam
-
-def consistency_metrics(A:np.ndarray):
-    n = A.shape[0]; _, lam = principal_eigenvector(A)
-    CI = (lam - n)/(n-1) if n>2 else 0.0; CR = CI / (RI.get(n, RI[10]) or 1.0)
-    return lam, CI, CR
-
-def geom_mean_mats(mats):
-    logsum = np.zeros_like(mats[0], dtype=float)
-    for M in mats: logsum += np.log(M)
-    G = np.exp(logsum/len(mats)); np.fill_diagonal(G,1.0)
-    for i in range(G.shape[0]):
-        for j in range(i+1,G.shape[1]): G[j,i] = 1.0 / G[i,j]
-    return G
-
-def default_pairs(n:int): return {f"{i},{j}":1.0 for i in range(n) for j in range(i+1,n)}
-
-# ---------------- App config ---------------- #
-st.set_page_config(page_title="AHP: Transmission Routes", layout="wide")
-
-# Mode from query string (default: expert)
-def get_mode()->str:
-    try:
-        qp = st.query_params            # Streamlit ≥1.30
-        mode = qp.get("mode", ["expert"])[0]
-    except Exception:
-        qp = st.experimental_get_query_params()  # older API
-        mode = (qp.get("mode", ["expert"])[0])
-    return mode.lower().strip()
-
-MODE = get_mode()          # "expert" or "coord"
-IS_COORD = MODE in ("coord", "coordinator", "admin")
-
-# Optional lightweight guard for accidental exposure:
-code_ok = True
-if IS_COORD:
-    with st.sidebar:
-        code = st.text_input("Coordinator code (optional)", type="password", help="Leave blank if not set.")
-        # Set a code here if you want to restrict coordinator view, e.g.: REQUIRED="mycode"
-        REQUIRED = ""  # e.g., "mysecret123"
-        code_ok = (REQUIRED == "") or (code == REQUIRED)
-
-st.title("AHP for Virus Transmission Routes")
-
-routes = [
+# ------------------------ Fixed transmission routes ------------------------ #
+ROUTES = [
     "Introduction of virus through introduction of day old chick",
     "Introduction of virus trough animal transport vehicle / equipment",
     "Introduction of virus through professional visitors at the farm (vet, truck driver, catching team)",
@@ -74,107 +30,229 @@ routes = [
     "Introduction of virus through the air over short distance (<1000m)",
     "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",
 ]
-labels = routes; n = len(labels)
+N = len(ROUTES)
 
-# Session state for pairwise inputs
-if "pairs_I" not in st.session_state: st.session_state["pairs_I"] = default_pairs(n)
-if "pairs_L" not in st.session_state: st.session_state["pairs_L"] = default_pairs(n)
+# ------------------------ Saaty Random Index (RI) -------------------------- #
+SAATY_RI = {
+    1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
+    9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59
+}
 
-# --------- STEP 1 (visible to experts) --------- #
-st.header("1) Transmission routes (fixed list)")
-st.dataframe({"#": list(range(1, n+1)), "Route": labels}, use_container_width=True, hide_index=True)
+# --------------------------- AHP core functions ---------------------------- #
+def eigen_priority(M: np.ndarray):
+    vals, vecs = np.linalg.eig(M)
+    idx = np.argmax(vals.real)
+    w = np.abs(vecs[:, idx].real)
+    w = w / w.sum()
+    return w, vals[idx].real
 
-# --------- STEP 2 (visible to experts) --------- #
-def pairwise_editor(title, key_prefix, state_key):
-    st.header(title)
-    st.caption("Saaty scale: 1=equal, 3=moderate, 5=strong, 7=very strong, 9=extreme. "
-               "Always read as the **first** item vs the **second**.")
-    pairs = st.session_state[state_key]
-    cols = st.columns(3); per_col = (n*(n-1)//2 + 2)//3
-    idx = 0; c = 0
-    for i in range(n):
-        for j in range(i+1, n):
-            if idx and idx % per_col == 0: c = min(c+1, 2)
-            with cols[c]:
-                v = float(pairs.get(f"{i},{j}", 1.0))
-                pairs[f"{i},{j}"] = st.number_input(
-                    f"{labels[i]}  vs  {labels[j]}",
-                    min_value=1.0, max_value=9.0, step=1.0, value=v,
-                    key=f"{key_prefix}_{i}_{j}")
-            idx += 1
-    st.session_state[state_key] = pairs
+def consistency_ratio(M: np.ndarray):
+    n = M.shape[0]
+    w, lam = eigen_priority(M)
+    CI = (lam - n) / (n - 1) if n > 1 else 0.0
+    RI = SAATY_RI.get(n, 1.59)
+    CR = CI / RI if RI > 0 else 0.0
+    return CR, CI, lam, w
 
-pairwise_editor("2) Pairwise comparisons — IMPORTANCE", "imp", "pairs_I")
-pairwise_editor("2) Pairwise comparisons — LIKELIHOOD", "lik", "pairs_L")
+def matrix_from_upper_triangle(n: int, pairs: dict[tuple[int,int], float]) -> np.ndarray:
+    """Build a reciprocal AHP matrix from values given for i<j."""
+    M = np.ones((n, n), dtype=float)
+    for (i, j), v in pairs.items():
+        if i == j: 
+            continue
+        v = float(v)
+        if v <= 0:
+            raise ValueError("Saaty values must be > 0")
+        M[i, j] = v
+        M[j, i] = 1.0 / v
+    return M
 
-# --------- Expert export (still visible in expert mode) --------- #
-def dl_json(pairs, criterion):
-    data = {"criterion": criterion, "labels": labels, "pairs": pairs,
-            "scale": "Saaty 1–9 (reciprocal implied)"}
-    return json.dumps(data, indent=2).encode("utf-8")
+# ----------------------------- UI helpers --------------------------------- #
+SAATY_SCALE = {
+    "1 (equal)": 1,
+    "2 (between 1–3)": 2,
+    "3 (moderate)": 3,
+    "4 (between 3–5)": 4,
+    "5 (strong)": 5,
+    "6 (between 5–7)": 6,
+    "7 (very strong)": 7,
+    "8 (between 7–9)": 8,
+    "9 (extreme)": 9,
+}
 
-st.subheader("Export your answers (send these two files to the coordinator)")
-c1, c2 = st.columns(2)
-with c1:
-    st.download_button("Download Importance JSON",
-        data=dl_json(st.session_state["pairs_I"], "Importance"),
-        file_name="expert_importance.json", mime="application/json")
-with c2:
-    st.download_button("Download Likelihood JSON",
-        data=dl_json(st.session_state["pairs_L"], "Likelihood"),
-        file_name="expert_likelihood.json", mime="application/json")
+def saaty_selectbox(key_prefix: str, label: str, default=1):
+    options = list(SAATY_SCALE.keys())
+    default_idx = options.index(next(k for k,v in SAATY_SCALE.items() if v==default))
+    choice = st.selectbox(label, options, index=default_idx, key=key_prefix)
+    return SAATY_SCALE[choice]
 
-# ==================== COORDINATOR VIEW ONLY ==================== #
-if IS_COORD and code_ok:
-    st.divider()
-    st.markdown("### Coordinator view (Steps 3–5) — hidden from experts")
+def pairwise_form(criterion_key: str, title: str):
+    st.subheader(title)
+    st.caption("Pick a value **>1** if the left route is more important/likely than the right; "
+               "use the *Reciprocal* toggle to flip direction (1/value).")
 
-    # Step 3: Results per criterion (from uploaded expert JSONs aggregated)
-    st.subheader("Upload JSONs from experts")
-    up_imp = st.file_uploader("Upload *Importance* JSON files", type=["json"], accept_multiple_files=True, key="agg_imp")
-    up_lik = st.file_uploader("Upload *Likelihood* JSON files", type=["json"], accept_multiple_files=True, key="agg_lik")
+    pairs = {}
+    cols = st.columns([2, 2, 1.2, 1.2, 2])  # headers
+    with cols[0]: st.markdown("**Left route**")
+    with cols[1]: st.markdown("**Right route**")
+    with cols[2]: st.markdown("**Saaty**")
+    with cols[3]: st.markdown("**Reciprocal?**")
+    with cols[4]: st.markdown("**Preview**")
 
-    def load_group(files):
-        if not files: return None
-        mats=[]; base=None
-        for f in files:
-            d = json.loads(f.read().decode("utf-8"))
-            if base is None: base = d["labels"]
-            if d["labels"] != base:
-                st.error("All uploaded files must have the same labels and ordering.")
-                return None
-            mats.append(matrix_from_pairs(len(base), d["pairs"]))
-        return geom_mean_mats(mats), base
+    for i in range(N - 1):
+        for j in range(i + 1, N):
+            row = st.columns([2, 2, 1.2, 1.2, 2])
+            with row[0]:
+                st.write(f"{i+1}. {ROUTES[i]}")
+            with row[1]:
+                st.write(f"{j+1}. {ROUTES[j]}")
+            with row[2]:
+                val = saaty_selectbox(f"{criterion_key}_saaty_{i}_{j}", "", default=1)
+            with row[3]:
+                recip = st.checkbox(" ", key=f"{criterion_key}_rec_{i}_{j}", value=False)
+            with row[4]:
+                if not recip:
+                    st.write(f"{val} (left > right)")
+                    pairs[(i, j)] = float(val)
+                else:
+                    st.write(f"1/{val} (right > left)")
+                    pairs[(i, j)] = 1.0 / float(val)
 
-    G_I, base_I = load_group(up_imp) if up_imp else (None, None)
-    G_L, base_L = load_group(up_lik) if up_lik else (None, None)
+    return pairs
 
-    def show_weights(name, G):
-        if G is None: 
-            st.info(f"Upload {name} JSON files to compute group weights.")
-            return None
-        w, _ = principal_eigenvector(G); lam, CI, CR = consistency_metrics(G)
-        st.write(f"**Aggregated {name}** — λmax={lam:.4f} · CI={CI:.4f} · CR={CR:.4f}")
-        st.dataframe({"label": labels, "weight": w})
-        return w
+# ------------------------------- App body --------------------------------- #
+st.set_page_config(page_title="AHP – Transmission Routes (Steps 1–2)", layout="wide")
 
-    st.header("3) Aggregated weights (group)")
-    wI_g = show_weights("Importance", G_I)
-    wL_g = show_weights("Likelihood", G_L)
+st.title("AHP – Transmission Routes")
+st.markdown("""
+**Steps 1 & 2 (visible to experts):**  
+Provide pairwise comparisons for **Importance** and **Likelihood** of each transmission route (Saaty 1–9 scale).
 
-    # Step 4 & 5: Combined risk
-    if (wI_g is not None) and (wL_g is not None):
-        st.header("4) Combined risk = normalized (Importance × Likelihood)")
-        prod = wI_g * wL_g; risk = prod / prod.sum()
-        st.dataframe({"label": labels, "importance": wI_g, "likelihood": wL_g, "risk": risk})
-        import io, csv
-        def tocsv(rows, header):
-            s = io.StringIO(); w = csv.writer(s); w.writerow(header); w.writerows(rows); return s.getvalue().encode()
-        risk_rows = [[lbl, float(a), float(b), float(r)] for lbl,a,b,r in zip(labels, wI_g, wL_g, risk)]
-        st.download_button("Download Combined Risk CSV",
-                           tocsv(risk_rows, ["label","importance","likelihood","risk"]),
-                           "risk_scores.csv", mime="text/csv")
+**Steps 3–5 (hidden):**  
+The app internally aggregates your inputs into AHP matrices, computes **weights** and **consistency**, and produces a **Combined Risk** (Importance × Likelihood) ranking.  
+Click **Export Excel** to download the results.
+""")
 
-elif IS_COORD and not code_ok:
-    st.warning("Enter the correct coordinator code to view Steps 3–5.")
+with st.expander("Show transmission routes", expanded=False):
+    for idx, r in enumerate(ROUTES, start=1):
+        st.write(f"{idx}. {r}")
+
+st.divider()
+st.header("Step 1 — Pairwise comparisons: Importance")
+pairs_I = pairwise_form("I", "Fill comparisons for **Importance**")
+
+st.divider()
+st.header("Step 2 — Pairwise comparisons: Likelihood")
+pairs_L = pairwise_form("L", "Fill comparisons for **Likelihood**")
+
+st.divider()
+st.subheader("Export results")
+st.caption("The Excel file includes: raw & % weights, rankings, CR/CI, and the two aggregated matrices.")
+
+# ---------------------------- Compute & export ---------------------------- #
+def compute_and_package_excel(pairs_I, pairs_L) -> bytes:
+    # Build matrices
+    M_I = matrix_from_upper_triangle(N, pairs_I)
+    M_L = matrix_from_upper_triangle(N, pairs_L)
+
+    # Consistency & weights
+    CR_I, CI_I, lam_I, w_I = consistency_ratio(M_I)
+    CR_L, CI_L, lam_L, w_L = consistency_ratio(M_L)
+
+    # Combined risk (normalized again for clarity)
+    risk = w_I * w_L
+    risk = risk / risk.sum()
+
+    # Assemble results table
+    df = pd.DataFrame({
+        "Route": ROUTES,
+        "Importance_w": w_I,
+        "Likelihood_w": w_L,
+        "Risk_w": risk
+    })
+    df["Rank_Importance"] = df["Importance_w"].rank(ascending=False, method="min").astype(int)
+    df["Rank_Likelihood"] = df["Likelihood_w"].rank(ascending=False, method="min").astype(int)
+    df["Rank_Risk"]       = df["Risk_w"].rank(ascending=False, method="min").astype(int)
+
+    # Percentage columns
+    for col in ("Importance_w", "Likelihood_w", "Risk_w"):
+        df[col + " (%)"] = (df[col] * 100).round(4)
+
+    # Sort by risk rank
+    df = df.sort_values("Rank_Risk").reset_index(drop=True)
+
+    # Build Excel in-memory
+    buf = io.BytesIO()
+    # Prefer openpyxl; fall back to xlsxwriter if not available
+    engine = None
+    try:
+        import openpyxl  # noqa
+        engine = "openpyxl"
+    except Exception:
+        try:
+            import xlsxwriter  # noqa
+            engine = "xlsxwriter"
+        except Exception:
+            engine = None
+    if engine is None:
+        raise RuntimeError("Please install 'openpyxl' or 'xlsxwriter' to export Excel.")
+
+    with pd.ExcelWriter(buf, engine=engine) as writer:
+        # Results sheet
+        cols = [
+            "Rank_Risk", "Route",
+            "Risk_w", "Risk_w (%)",
+            "Importance_w", "Importance_w (%)",
+            "Likelihood_w", "Likelihood_w (%)",
+            "Rank_Importance", "Rank_Likelihood",
+        ]
+        df[cols].to_excel(writer, sheet_name="Results", index=False)
+
+        # Consistency sheet
+        con = pd.DataFrame({
+            "Criterion": ["Importance", "Likelihood"],
+            "n (routes)": [N, N],
+            "lambda_max": [lam_I, lam_L],
+            "CI": [CI_I, CI_L],
+            "CR": [CR_I, CR_L]
+        })
+        con.to_excel(writer, sheet_name="Consistency", index=False)
+
+        # Aggregated matrices sheet
+        df_MI = pd.DataFrame(M_I, index=ROUTES, columns=ROUTES)
+        df_ML = pd.DataFrame(M_L, index=ROUTES, columns=ROUTES)
+        df_MI.to_excel(writer, sheet_name="Aggregated_Matrices", startrow=0, startcol=0)
+        startcol_right = df_MI.shape[1] + 2
+        df_ML.to_excel(writer, sheet_name="Aggregated_Matrices", startrow=0, startcol=startcol_right)
+
+    buf.seek(0)
+    return buf.read(), (CR_I, CR_L)
+
+# Button to export
+if st.button("Export Excel"):
+    try:
+        data, (CRI, CRL) = compute_and_package_excel(pairs_I, pairs_L)
+        st.success("AHP computed. If CR > 0.10, consider revisiting some comparisons.")
+        st.write(f"Importance CR: **{CRI:.3f}**  •  Likelihood CR: **{CRL:.3f}**")
+        st.download_button(
+            label="Download AHP results (Excel)",
+            data=data,
+            file_name="ahp_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        st.error(f"Error: {e}")
+        st.stop()
+
+# (Optional) Minimal preview of what will be exported (no details of steps 3–5)
+with st.expander("Preview top routes by combined risk (for your validation)"):
+    try:
+        data, _ = compute_and_package_excel(pairs_I, pairs_L)
+        # Read back the Results sheet only for display
+        with io.BytesIO(data) as b:
+            xls = pd.ExcelFile(b)
+            df_prev = pd.read_excel(xls, sheet_name="Results")
+        st.dataframe(df_prev.head(10))
+    except Exception:
+        st.info("Fill some comparisons and click Export to see a preview.")
 
