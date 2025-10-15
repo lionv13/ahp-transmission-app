@@ -127,8 +127,8 @@ def slugify(s: str) -> str:
     return s or "expert"
 
 # -------------- App body -------------- #
-st.set_page_config(page_title="AHP – Transmission Routes (Importance only)", layout="wide")
-st.title("AHP – Transmission Routes (Importance only)")
+st.set_page_config(page_title="HPAI – Importance of Transmission Routes ", layout="wide")
+st.title("HPAI – Importance of Transmission Routes")
 
 with st.expander("Show transmission routes", expanded=False):
     for idx, r in enumerate(ROUTES, start=1):
@@ -191,7 +191,7 @@ if st.button("Export Excel", disabled=export_disabled):
             data, CRI = compute_and_package_excel(pairs_I, expert_name.strip(), expert_credentials.strip())
             st.success(f"AHP (Importance) computed. Email the file to {SUBMIT_EMAIL}.")
             st.write(f"Importance CR: **{CRI:.3f}**")
-            filename = f"ahp_importance_results_{slugify(expert_name)}.xlsx"
+            filename = f"hpai_importance_results_{slugify(expert_name)}.xlsx"
             st.download_button(
                 label=f"Download results – {filename}",
                 data=data,
