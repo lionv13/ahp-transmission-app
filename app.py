@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-HPAI – Transmission Routes 
+HPAI Transmission Routes – Pairwise Comparison App
 - Experts enter pairwise comparisons for Importance (Score 1–9).
 - Experts enter their Name and Credentials.
-- Clear instructions box for how to fill & save.
+- Clear instructions for filling and saving.
 - Exports Excel named with the expert's name (metadata included).
 
 Run: streamlit run app.py
@@ -35,7 +35,10 @@ ROUTES = [
 N = len(ROUTES)
 
 # -------------- Saaty RI -------------- #
-SAATY_RI = {1:0.00,2:0.00,3:0.58,4:0.90,5:1.12,6:1.24,7:1.32,8:1.41,9:1.45,10:1.49,11:1.51,12:1.48,13:1.56,14:1.57,15:1.59}
+SAATY_RI = {
+    1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
+    9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59
+}
 
 # -------------- AHP core -------------- #
 def eigen_priority(M: np.ndarray):
@@ -59,35 +62,37 @@ def matrix_from_upper_triangle(n: int, pairs: dict[tuple[int,int], float]) -> np
             continue
         v = float(v)
         if v <= 0:
-            raise ValueError("Saaty values must be > 0")
+            raise ValueError("Score values must be > 0")
         M[i, j] = v
         M[j, i] = 1.0 / v
     return M
 
 # -------------- UI helpers -------------- #
-SAATY_SCALE = {
+SCORE_SCALE = {
     "1 (equal)": 1, "2 (between 1–3)": 2, "3 (moderate)": 3, "4 (between 3–5)": 4,
     "5 (strong)": 5, "6 (between 5–7)": 6, "7 (very strong)": 7, "8 (between 7–9)": 8, "9 (extreme)": 9,
 }
-def saaty_selectbox(key_prefix: str, label: str, default=1):
-    options = list(SAATY_SCALE.keys())
-    default_idx = options.index(next(k for k, v in SAATY_SCALE.items() if v == default))
+
+def score_selectbox(key_prefix: str, label: str, default=1):
+    options = list(SCORE_SCALE.keys())
+    default_idx = options.index(next(k for k, v in SCORE_SCALE.items() if v == default))
     choice = st.selectbox(label, options, index=default_idx, key=key_prefix)
-    return SAATY_SCALE[choice]
+    return SCORE_SCALE[choice]
 
 def pairwise_form(criterion_key: str, title: str):
     st.subheader(title)
 
-    # 🔸 Clear instructions (bold + colored box)
+    # 🔸 Clear orange instruction box
     st.markdown(
         """
         <div style="background:#FFF3E0;border-left:6px solid #FF9800;padding:12px 14px;margin:8px 0 14px 0;">
           <div style="font-weight:700;color:#E65100;margin-bottom:6px;">How to fill & save</div>
           <ol style="margin:0 0 4px 18px;">
-            <li>For each <b>pair</b> of transmission routes, add a score from <b>1 to 9</b> using the Saaty scale.</li>
-            <li>If the <b>left route</b> is more important, choose a value <b>&gt; 1</b>. If the <b>right route</b> is more important, tick <b>Reciprocal</b> to use <b>1/value</b>.</li>
+            <li>For each <b>pair</b> of transmission routes, assign a <b>score from 1 to 9</b> based on importance.</li>
+            <li>If the <b>left route</b> is more important, choose a value <b>&gt; 1</b>.  
+                If the <b>right route</b> is more important, tick <b>Reciprocal</b> to use <b>1/value</b>.</li>
             <li>Fill <b>all</b> pairwise comparisons.</li>
-            <li>Click <b>Export Excel</b>.</li>
+            <li>Click <b>Export Excel</b> once you have completed all comparisons.</li>
             <li>Send the downloaded file to <b>""" + SUBMIT_EMAIL + """</b>.</li>
           </ol>
         </div>
@@ -99,7 +104,7 @@ def pairwise_form(criterion_key: str, title: str):
     head = st.columns([2, 2, 1.2, 1.2, 2])
     with head[0]: st.markdown("**Left route**")
     with head[1]: st.markdown("**Right route**")
-    with head[2]: st.markdown("**Saaty**")
+    with head[2]: st.markdown("**Score (1–9)**")
     with head[3]: st.markdown("**Reciprocal?**")
     with head[4]: st.markdown("**Preview**")
 
@@ -108,7 +113,7 @@ def pairwise_form(criterion_key: str, title: str):
             row = st.columns([2, 2, 1.2, 1.2, 2])
             with row[0]: st.write(f"{i+1}. {ROUTES[i]}")
             with row[1]: st.write(f"{j+1}. {ROUTES[j]}")
-            with row[2]: val = saaty_selectbox(f"{criterion_key}_saaty_{i}_{j}", "", default=1)
+            with row[2]: val = score_selectbox(f"{criterion_key}_score_{i}_{j}", "", default=1)
             with row[3]: recip = st.checkbox(" ", key=f"{criterion_key}_rec_{i}_{j}", value=False)
             with row[4]:
                 if not recip:
@@ -127,8 +132,13 @@ def slugify(s: str) -> str:
     return s or "expert"
 
 # -------------- App body -------------- #
-st.set_page_config(page_title="HPAI – Importance of Transmission Routes ", layout="wide")
-st.title("HPAI – Importance of Transmission Routes")
+st.set_page_config(page_title="HPAI Transmission Routes", layout="wide")
+
+st.title("HPAI Transmission Routes")
+st.markdown("""
+Experts enter pairwise comparisons for **Importance (Score 1–9)**.  
+The app will calculate weights, rankings, and consistency ratios automatically.
+""")
 
 with st.expander("Show transmission routes", expanded=False):
     for idx, r in enumerate(ROUTES, start=1):
@@ -143,13 +153,14 @@ with colB:
     expert_credentials = st.text_input("Credentials / Institution", placeholder="e.g., DVM, PhD – Example University")
 
 st.divider()
-st.header("Pairwise comparisons: Importance")
-pairs_I = pairwise_form("I", "Fill comparisons for **Importance**")
+st.header("Pairwise comparisons: Importance (Score 1–9)")
+pairs_I = pairwise_form("I", "Fill comparisons for **Importance (Score 1–9)**")
 
 st.divider()
 st.subheader("Export results")
-st.caption("Excel includes: raw & % weights, ranking, CR/CI, aggregated matrix, and your metadata.")
+st.caption("The Excel file includes weights, rankings, consistency ratios, the full matrix, and your metadata.")
 
+# -------------- Compute & Export -------------- #
 def compute_and_package_excel(pairs_I, expert_name, expert_credentials) -> bytes:
     M_I = matrix_from_upper_triangle(N, pairs_I)
     CR_I, CI_I, lam_I, w_I = consistency_ratio(M_I)
@@ -189,8 +200,8 @@ if st.button("Export Excel", disabled=export_disabled):
     else:
         try:
             data, CRI = compute_and_package_excel(pairs_I, expert_name.strip(), expert_credentials.strip())
-            st.success(f"AHP (Importance) computed. Email the file to {SUBMIT_EMAIL}.")
-            st.write(f"Importance CR: **{CRI:.3f}**")
+            st.success(f"Scores processed successfully. Email the file to {SUBMIT_EMAIL}.")
+            st.write(f"Consistency ratio (CR): **{CRI:.3f}**")
             filename = f"hpai_importance_results_{slugify(expert_name)}.xlsx"
             st.download_button(
                 label=f"Download results – {filename}",
