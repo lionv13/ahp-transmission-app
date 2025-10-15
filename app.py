@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-AHP – Transmission Routes (Importance only)
-- Experts enter pairwise comparisons for Importance (Saaty 1–9).
+HPAI – Transmission Routes 
+- Experts enter pairwise comparisons for Importance (Score 1–9).
 - Experts enter their Name and Credentials.
 - Clear instructions box for how to fill & save.
 - Exports Excel named with the expert's name (metadata included).
