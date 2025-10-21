@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 HPAI Transmission Routes – Expert Scoring Wizard (Importance only)
-Pages:
+Flow:
   0) Intro
-  1..N) Route i vs remaining routes (pairwise pages)
-  N+1) Finish (export + email)
+  1..P) One page per pair (i<j)  where P = N*(N-1)//2
+  P+1) Finish (export + optional email)
 
 Run: streamlit run app.py
 """
@@ -26,11 +26,10 @@ except ImportError:
         ENGINE = "xlsxwriter"
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-        import openpyxl
+        import openpyxl  # type: ignore
         ENGINE = "openpyxl"
 
 # ---------------- Configuration ---------------- #
-# Put your default recipient here; can be overridden by st.secrets["email"]["to"]
 DEFAULT_TO_EMAIL = "your-submission@organization.org"
 
 ROUTES = [
@@ -47,11 +46,11 @@ ROUTES = [
     "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",
 ]
 N = len(ROUTES)
+PAIRS = [(i, j) for i in range(N - 1) for j in range(i + 1, N)]  # ordered list of (i,j)
+P = len(PAIRS)  # number of pair pages
 
-SAATY_RI = {
-    1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
-    9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59
-}
+SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
+            9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59}
 
 SCORE_SCALE = {
     "1 (equal)": 1, "2 (between 1–3)": 2, "3 (moderate)": 3, "4 (between 3–5)": 4,
@@ -74,7 +73,6 @@ def consistency_ratio(M: np.ndarray):
     return CR, CI, lam, w
 
 def matrix_from_pairs(n: int, pairs_dict: dict[tuple[int,int], float]) -> np.ndarray:
-    """pairs_dict has only i<j. Build full reciprocal matrix."""
     M = np.ones((n, n), dtype=float)
     for (i, j), v in pairs_dict.items():
         if i == j:
@@ -95,11 +93,6 @@ def slugify(s: str) -> str:
 
 # ---------------- Email helper ---------------- #
 def send_results_email(attachment_bytes: bytes, filename: str, expert_name: str, expert_credentials: str) -> tuple[bool, str]:
-    """
-    Sends email with attachment using st.secrets["email"] config if present:
-      host, port, user, password, to
-    Returns (ok, message).
-    """
     cfg = st.secrets.get("email", {})
     host = cfg.get("host")
     port = int(cfg.get("port", 587))
@@ -128,7 +121,6 @@ def send_results_email(attachment_bytes: bytes, filename: str, expert_name: str,
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=filename,
     )
-
     try:
         with smtplib.SMTP(host, port, timeout=30) as s:
             s.starttls()
@@ -139,14 +131,13 @@ def send_results_email(attachment_bytes: bytes, filename: str, expert_name: str,
         return False, f"Email send failed: {e}"
 
 # ---------------- Streamlit state ---------------- #
-st.set_page_config(page_title="HPAI Transmission Routes – Wizard", layout="wide")
+st.set_page_config(page_title="HPAI Transmission Routes – Wizard (Pairs)", layout="wide")
 
 if "page" not in st.session_state:
-    st.session_state.page = 0  # 0=intro, 1..N routes, N+1 finish
+    st.session_state.page = 0  # 0=intro, 1..P pairs, P+1 finish
 
 if "pairs" not in st.session_state:
-    # store float values for i<j
-    st.session_state.pairs = {}
+    st.session_state.pairs = {}  # stores value for each (i,j) with i<j
 
 if "expert_name" not in st.session_state:
     st.session_state.expert_name = ""
@@ -156,12 +147,9 @@ if "expert_credentials" not in st.session_state:
 
 # ---------------- UI helpers ---------------- #
 def header_bar():
-    total_pages = N + 2
-    st.markdown(
-        f"**Step {st.session_state.page+1} / {total_pages}**",
-        help="Use Next/Back to navigate. Your inputs are saved automatically."
-    )
-    st.progress((st.session_state.page+1)/total_pages)
+    total_pages = P + 2
+    st.markdown(f"**Step {st.session_state.page+1} / {total_pages}**")
+    st.progress((st.session_state.page+1) / total_pages)
 
 def score_selectbox(key: str, default=1):
     options = list(SCORE_SCALE.keys())
@@ -177,7 +165,7 @@ def nav_buttons(show_back=True, show_next=True, next_label="Next"):
             st.rerun()
     with cols[3]:
         if show_next and st.button(next_label):
-            st.session_state.page = min(N + 1, st.session_state.page + 1)
+            st.session_state.page = min(P + 1, st.session_state.page + 1)
             st.rerun()
 
 # ---------------- Pages ---------------- #
@@ -190,10 +178,10 @@ def page_intro():
         <div style="background:#FFF3E0;border-left:6px solid #FF9800;padding:12px 14px;margin:8px 0 14px 0;">
           <div style="font-weight:700;color:#E65100;margin-bottom:6px;">Read before starting</div>
           <ul style="margin:0 0 4px 18px;">
-            <li>On each page you’ll evaluate one route against the remaining routes.</li>
-            <li>If the <b>left route</b> is more important, choose a score <b>&gt; 1</b>.
-                If the <b>right route</b> is more important, tick <b>Reciprocal</b> (this applies <b>1/score</b>).</li>
-            <li>Complete all pages, then click <b>Finish</b> to export the results.</li>
+            <li>You will be shown <b>two routes at a time</b>. Choose which is more important using a <b>Score 1–9</b>.</li>
+            <li>If the <b>left route</b> is more important, pick a score <b>&gt; 1</b>.
+                If the <b>right route</b> is more important, tick <b>Reciprocal</b> (applies <b>1/score</b>).</li>
+            <li>Complete all pairs, then click <b>Finish</b> to export results.</li>
           </ul>
         </div>
         """,
@@ -218,77 +206,56 @@ def page_intro():
         )
 
     disabled = (st.session_state.expert_name.strip() == "")
-    st.info("Click **Next** to begin scoring. You can go back anytime.")
-    nav_buttons(show_back=False, show_next=True, next_label="Start ▶" if not disabled else "Enter name to continue ▶")
+    st.info("Click **Next** to begin. You can go back anytime.")
+    nav_buttons(show_back=False, show_next=not disabled, next_label="Start ▶")
     if disabled:
         st.stop()
 
-def page_route(i: int):
-    """Page for focal route i: compare i vs j>i."""
-    st.header_bar = header_bar()
-    st.subheader(f"Route {i+1} of {N}")
-    st.markdown(f"**Left route (focal):** {ROUTES[i]}")
+def page_pair(k: int):
+    """k from 0..P-1 maps to a pair (i,j)."""
+    (i, j) = PAIRS[k]
+    header_bar()
+    st.subheader(f"Pair {k+1} of {P}")
 
-    st.markdown(
-        "<div style='color:#BF360C;font-weight:700;margin:6px 0 10px 0;'>"
-        "Pick a score >1 if the left route is more important; tick Reciprocal if the right route is more important."
-        "</div>",
-        unsafe_allow_html=True
-    )
+    with st.container(border=True):
+        c = st.columns([2.2, 1.2, 1.2, 2.2])
+        with c[0]:
+            st.markdown("**Left route**")
+            st.write(ROUTES[i])
+        with c[3]:
+            st.markdown("**Right route**")
+            st.write(ROUTES[j])
 
-    # Build rows for j=i+1..N-1
-    for j in range(i + 1, N):
-        with st.container(border=True):
-            st.markdown(f"**Compare with (right route):** {ROUTES[j]}")
-            key_val = f"score_{i}_{j}"
-            key_rec = f"rec_{i}_{j}"
+        # recall defaults if already chosen
+        default_score, default_recip = 1, False
+        if (i, j) in st.session_state.pairs:
+            v = float(st.session_state.pairs[(i, j)])
+            if v >= 1:
+                default_score, default_recip = int(round(v)), False
+            else:
+                default_score, default_recip = int(round(1.0 / v)), True
 
-            # Defaults: existing session value or 1
-            default_score = 1
-            default_recip = False
-            if (i, j) in st.session_state.pairs:
-                # pairs store actual value; infer if it's reciprocal by <=1
-                v = float(st.session_state.pairs[(i, j)])
-                if v >= 1:
-                    default_score = int(round(v))
-                    default_recip = False
-                else:
-                    # v = 1/score
-                    inv = round(1.0 / v)
-                    default_score = int(inv)
-                    default_recip = True
+        with c[1]:
+            st.caption("Score (1–9)")
+            score_val = score_selectbox(f"score_{i}_{j}", default=default_score)
+        with c[2]:
+            st.caption("Reciprocal?")
+            recip = st.checkbox(" ", key=f"rec_{i}_{j}", value=default_recip)
 
-            c = st.columns([2.2, 1.2, 1.2, 2.2])
-            with c[0]:
-                st.caption("Left route")
-                st.write(ROUTES[i])
-            with c[1]:
-                st.caption("Score (1–9)")
-                score_val = score_selectbox(key_val, default=default_score)
-            with c[2]:
-                st.caption("Reciprocal?")
-                recip = st.checkbox(" ", key=key_rec, value=default_recip)
-            with c[3]:
-                st.caption("Right route")
-                st.write(ROUTES[j])
-
-            # Save to pairs as an always-upper value (i<j)
-            st.session_state.pairs[(i, j)] = (1.0 / score_val) if recip else float(score_val)
+        # save normalized (always i<j)
+        st.session_state.pairs[(i, j)] = (1.0 / score_val) if recip else float(score_val)
 
     nav_buttons(show_back=True, show_next=True)
 
 def page_finish():
-    st.header_bar = header_bar()
+    header_bar()
     st.header("Finish")
 
-    # Build matrix & results
-    pairs = st.session_state.pairs
-    # Ensure all pairs exist (default 1 if missing)
-    for i in range(N - 1):
-        for j in range(i + 1, N):
-            pairs.setdefault((i, j), 1.0)
+    # ensure all pairs exist
+    for (i, j) in PAIRS:
+        st.session_state.pairs.setdefault((i, j), 1.0)
 
-    M = matrix_from_pairs(N, pairs)
+    M = matrix_from_pairs(N, st.session_state.pairs)
     CR, CI, lam, w = consistency_ratio(M)
 
     df = pd.DataFrame({"Route": ROUTES, "Importance_w": w})
@@ -296,10 +263,9 @@ def page_finish():
     df["Rank_Importance"] = df["Importance_w"].rank(ascending=False, method="min").astype(int)
     df = df.sort_values("Rank_Importance").reset_index(drop=True)
 
-    st.success("All steps are complete. Click **Export & Send** to save your results.")
+    st.success("All pairs completed. Click **Export & Send** to save your results.")
     st.write(f"Consistency ratio (CR): **{CR:.3f}**")
 
-    # build Excel
     def build_excel() -> bytes:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine=ENGINE) as writer:
@@ -331,13 +297,11 @@ def page_finish():
         if st.button("💾 Export & Send"):
             try:
                 data = build_excel()
-                # Attempt email (optional)
                 ok, msg = send_results_email(data, filename, expert_name, expert_credentials)
                 if ok:
                     st.success(msg)
                 else:
                     st.warning(msg)
-
                 st.download_button(
                     label=f"Download results – {filename}",
                     data=data,
@@ -349,12 +313,11 @@ def page_finish():
 
     nav_buttons(show_back=True, show_next=False)
 
-# -------------- Router -------------- #
-header_bar()
+# ---------------- Router ---------------- #
 page = st.session_state.page
 if page == 0:
     page_intro()
-elif 1 <= page <= N:
-    page_route(page - 1)
+elif 1 <= page <= P:
+    page_pair(page - 1)
 else:
     page_finish()
