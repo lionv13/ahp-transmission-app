@@ -1,76 +1,74 @@
 # -*- coding: utf-8 -*-
 """
-HPAI Transmission Routes – Expert Scoring Wizard (Importance only)
-Flow:
-  0) Intro
-  1..P) One page per pair (i<j)  where P = N*(N-1)//2
-  P+1) Finish (export + optional email)
+HPAI Transmission Routes – AHP (Importance only)
+Wizard: Intro → one page per pairwise comparison → Finish & Export
 
-Run: streamlit run app.py
+- Experts enter pairwise comparisons for Importance (Score 1–9).
+- Steps 3–5 (weights, consistency, matrix, ranking) are computed internally.
+- Exports an Excel file named with the expert's name.
+- Emails results automatically (SMTP creds from Streamlit secrets).
+
+Run locally:  streamlit run app.py
 """
 
 from __future__ import annotations
-import io, re, datetime as dt, subprocess, sys, smtplib
-from email.message import EmailMessage
+import io
+from typing import Dict, Tuple, List
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ---------------- Auto-install Excel engines ---------------- #
-try:
-    import openpyxl  # noqa
-    ENGINE = "openpyxl"
-except ImportError:
-    try:
-        import xlsxwriter  # noqa
-        ENGINE = "xlsxwriter"
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
-        import openpyxl  # type: ignore
-        ENGINE = "openpyxl"
+# ============================== CONFIG =============================== #
+st.set_page_config(page_title="HPAI Transmission Routes – Importance", layout="wide")
 
-# ---------------- Configuration ---------------- #
-DEFAULT_TO_EMAIL = "your-submission@organization.org"
-
-ROUTES = [
-    "Introduction of virus through introduction of day old chick",
-    "Introduction of virus trough animal transport vehicle / equipment",
-    "Introduction of virus through professional visitors at the farm (vet, truck driver, catching team)",
-    "Introduction of virus through feed trucks",
-    "Introduction of virus through vermin or birds",
-    "Introduction of virus through water",
-    "Introduction of virus through truck of the rendering company",
-    "Introduction of virus through shared equipment",
-    "Introduction of virus through other farm animals",
-    "Introduction of virus through the air over short distance (<1000m)",
-    "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",
+ROUTES: List[str] = [
+    "Introduction of virus through introduction of day old chick",  # 1
+    "Introduction of virus trough animal transport vehicle / equipment",  # 2
+    "Introduction of virus through professional visitors at the farm (vet, truck driver, catching team)",  # 3
+    "Introduction of virus through feed trucks",  # 4
+    "Introduction of virus through vermin or birds",  # 5
+    "Introduction of virus through water",  # 6
+    "Introduction of virus through truck of the rendering company",  # 7
+    "Introduction of virus through shared equipment",  # 8
+    "Introduction of virus through other farm animals",  # 9
+    "Introduction of virus through the air over short distance (<1000m)",  # 10
+    "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",  # 11
 ]
 N = len(ROUTES)
-PAIRS = [(i, j) for i in range(N - 1) for j in range(i + 1, N)]
-P = len(PAIRS)
 
+# Saaty Random Index (for CR). We keep this name even though UI says "Score"
 SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
             9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59}
 
-SCORE_SCALE = {
-    "1 (no difference)": 1,
-    "2 (between 1–3)": 2,
-    "3 (moderate)": 3,
-    "4 (between 3–5)": 4,
-    "5 (strong)": 5,
-    "6 (between 5–7)": 6,
-    "7 (very strong)": 7,
-    "8 (between 7–9)": 8,
-    "9 (extreme)": 9,
-}
+# ============================= HELPERS =============================== #
+def all_pairs(n: int) -> List[Tuple[int, int]]:
+    """Return list of index pairs (i, j) with i<j."""
+    return [(i, j) for i in range(n-1) for j in range(i+1, n)]
 
-# ---------------- AHP core ---------------- #
+@st.cache_data(show_spinner=False)
+def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
+    """Build reciprocal AHP matrix from i<j values."""
+    M = np.ones((n, n), dtype=float)
+    for (i, j), v in pairs.items():
+        if i == j:
+            continue
+        vv = float(v)
+        if vv <= 0:
+            raise ValueError("Score values must be > 0")
+        M[i, j] = vv
+        M[j, i] = 1.0 / vv
+    return M
+
+@st.cache_data(show_spinner=False)
 def eigen_priority(M: np.ndarray):
     vals, vecs = np.linalg.eig(M)
     idx = np.argmax(vals.real)
     w = np.abs(vecs[:, idx].real)
-    return w / w.sum(), vals[idx].real
+    w = w / w.sum()
+    return w, float(vals[idx].real)
 
+@st.cache_data(show_spinner=False)
 def consistency_ratio(M: np.ndarray):
     n = M.shape[0]
     w, lam = eigen_priority(M)
@@ -79,295 +77,303 @@ def consistency_ratio(M: np.ndarray):
     CR = CI / RI if RI > 0 else 0.0
     return CR, CI, lam, w
 
-def matrix_from_pairs(n: int, pairs_dict: dict[tuple[int,int], float]) -> np.ndarray:
-    M = np.ones((n, n), dtype=float)
-    for (i, j), v in pairs_dict.items():
-        if i == j:
-            continue
-        v = float(v)
-        if v <= 0:
-            raise ValueError("Score values must be > 0")
-        M[i, j] = v
-        M[j, i] = 1.0 / v
-    return M
+@st.cache_resource(show_spinner=False)
+def get_excel_engine() -> str:
+    """Pick an Excel writer engine once per session."""
+    try:
+        import openpyxl  # noqa: F401
+        return "openpyxl"
+    except Exception:
+        try:
+            import xlsxwriter  # noqa: F401
+            return "xlsxwriter"
+        except Exception as e:
+            raise RuntimeError(
+                "No Excel writer installed. Add 'openpyxl' or 'xlsxwriter' to requirements.txt."
+            ) from e
 
-def slugify(s: str) -> str:
-    s = s.strip().lower()
-    s = re.sub(r"[^\w\s-]", "", s)
-    s = re.sub(r"\s+", "-", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
-    return s or "expert"
+@st.cache_resource(show_spinner=False)
+def get_mailer():
+    """Create a reusable SMTP client from Streamlit secrets."""
+    import smtplib
+    host = st.secrets["smtp"]["host"]
+    port = int(st.secrets["smtp"].get("port", 587))
+    user = st.secrets["smtp"]["user"]
+    password = st.secrets["smtp"]["password"]
+    use_tls = bool(st.secrets["smtp"].get("use_tls", True))
+    s = smtplib.SMTP(host, port, timeout=30)
+    if use_tls:
+        s.starttls()
+    s.login(user, password)
+    return s, user  # return sender as well
 
-# ---------------- Email helper ---------------- #
-def send_results_email(attachment_bytes: bytes, filename: str, expert_name: str, expert_credentials: str) -> tuple[bool, str]:
-    cfg = st.secrets.get("email", {})
-    host = cfg.get("host")
-    port = int(cfg.get("port", 587))
-    user = cfg.get("user")
-    password = cfg.get("password")
-    to_addr = cfg.get("to", DEFAULT_TO_EMAIL)
-
-    if not host or not user or not password:
-        return False, "SMTP settings missing (host/user/password). Add them to st.secrets['email'] to enable auto-email."
-
+def send_results_email(to_email: str, subject: str, body: str, attachment_bytes: bytes, filename: str):
+    """Send email with Excel results."""
+    from email.message import EmailMessage
+    (smtp, sender) = get_mailer()
     msg = EmailMessage()
-    msg["Subject"] = f"HPAI AHP Importance Results – {expert_name or 'Unnamed Expert'}"
-    msg["From"] = user
-    msg["To"] = to_addr
-    body = (
-        f"Automatic submission from the HPAI Transmission Routes app.\n\n"
-        f"Expert: {expert_name or '(not provided)'}\n"
-        f"Credentials/Institution: {expert_credentials or '(not provided)'}\n"
-        f"Timestamp (UTC): {dt.datetime.utcnow().isoformat(timespec='seconds')}Z\n\n"
-        f"Attached: {filename}\n"
-    )
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg["Subject"] = subject
     msg.set_content(body)
     msg.add_attachment(
         attachment_bytes,
         maintype="application",
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=filename,
+        filename=filename
     )
-    try:
-        with smtplib.SMTP(host, port, timeout=30) as s:
-            s.starttls()
-            s.login(user, password)
-            s.send_message(msg)
-        return True, f"Results emailed to {to_addr}"
-    except Exception as e:
-        return False, f"Email send failed: {e}"
+    smtp.send_message(msg)
 
-# ---------------- Streamlit state ---------------- #
-st.set_page_config(page_title="HPAI Transmission Routes – Wizard (Pairs)", layout="wide")
+def build_excel(expert_name: str, pairs_I: Dict[Tuple[int, int], float]) -> bytes:
+    """Compute results and return an Excel file as bytes."""
+    M_I = matrix_from_upper_triangle(N, pairs_I)
+    CR_I, CI_I, lam_I, w_I = consistency_ratio(M_I)
 
-if "page" not in st.session_state:
-    st.session_state.page = 0
-if "pairs" not in st.session_state:
-    st.session_state.pairs = {}
+    # Single-criterion “Risk” equals Importance weights (kept for naming continuity)
+    risk = w_I / np.sum(w_I)
+
+    df = pd.DataFrame({
+        "Route": ROUTES,
+        "Importance_w": w_I,
+        "Risk_w": risk,  # identical to Importance here
+    })
+
+    # Ranks
+    df["Rank_Importance"] = df["Importance_w"].rank(ascending=False, method="min").astype(int)
+    df["Rank_Risk"]       = df["Risk_w"].rank(ascending=False, method="min").astype(int)
+
+    # Percent columns
+    df["Importance_w (%)"] = (df["Importance_w"] * 100).round(4)
+    df["Risk_w (%)"]       = (df["Risk_w"] * 100).round(4)
+
+    # Sort by risk rank
+    df = df.sort_values("Rank_Risk").reset_index(drop=True)
+
+    # Excel
+    buf = io.BytesIO()
+    engine = get_excel_engine()
+    with pd.ExcelWriter(buf, engine=engine) as writer:
+        cols = [
+            "Rank_Risk", "Route",
+            "Risk_w", "Risk_w (%)",
+            "Importance_w", "Importance_w (%)",
+            "Rank_Importance",
+        ]
+        df[cols].to_excel(writer, sheet_name="Results", index=False)
+
+        con = pd.DataFrame({
+            "Criterion": ["Importance"],
+            "n (routes)": [N],
+            "lambda_max": [lam_I],
+            "CI": [CI_I],
+            "CR": [CR_I],
+        })
+        con.to_excel(writer, sheet_name="Consistency", index=False)
+
+        # Aggregated matrix
+        pd.DataFrame(M_I, index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+                        columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)]
+                    ).to_excel(writer, sheet_name="Aggregated_Matrix", index=True)
+
+        # Metadata
+        meta = pd.DataFrame({
+            "Expert Name": [expert_name],
+        })
+        meta.to_excel(writer, sheet_name="Meta", index=False)
+
+    buf.seek(0)
+    return buf.read()
+
+# ============================ STATE SETUP ============================ #
+if "page_idx" not in st.session_state:
+    st.session_state.page_idx = 0  # 0=intro, then 1..len(pairs), then finish
+if "pairs_list" not in st.session_state:
+    st.session_state.pairs_list = all_pairs(N)  # sequence of (i,j)
+if "pairs_values" not in st.session_state:
+    st.session_state.pairs_values: Dict[Tuple[int, int], float] = {}
 if "expert_name" not in st.session_state:
     st.session_state.expert_name = ""
 if "expert_credentials" not in st.session_state:
     st.session_state.expert_credentials = ""
+if "send_to_email" not in st.session_state:
+    # Default to secrets if present; otherwise empty
+    st.session_state.send_to_email = st.secrets.get("smtp", {}).get("report_to", "")
 
-# ---------------- Navigation helpers ---------------- #
-def goto_page(p: int):
-    st.session_state.page = max(0, min(P + 1, p))
-    st.rerun()
+pairs_seq = st.session_state.pairs_list
+page_idx = st.session_state.page_idx
 
-def next_page():
-    goto_page(st.session_state.page + 1)
-
-def back_page():
-    goto_page(st.session_state.page - 1)
-
-def header_bar():
-    total_pages = P + 2
-    st.markdown(f"**Step {st.session_state.page+1} / {total_pages}**")
-    st.progress((st.session_state.page+1) / total_pages)
-
-def score_selectbox(key: str, default=1):
-    options = list(SCORE_SCALE.keys())
-    idx = options.index(next(k for k, v in SCORE_SCALE.items() if v == default))
-    choice = st.selectbox("Score (1–9)", options, index=idx, key=key, label_visibility="collapsed")
-    return SCORE_SCALE[choice]
-
-def nav_buttons(show_back=True, show_next=True, next_label="Next"):
-    cols = st.columns([1,1,6,2])
-    with cols[0]:
-        if show_back and st.button("◀ Back", key=f"back_{st.session_state.page}"):
-            back_page()
-    with cols[3]:
-        if show_next and st.button(next_label, key=f"next_{st.session_state.page}"):
-            next_page()
-
-# ---------------- Pages ---------------- #
-def page_intro():
+# =============================== UI ================================= #
+def intro_page():
     st.title("HPAI Transmission Routes")
-    st.markdown("Experts pairwise comparisons for **Importance (Score 1–9)**.")
+    st.markdown("### Importance (Score 1–9)")
 
-    # Clear, highlighted instructions with detailed scale meaning
     st.markdown(
         """
-        <div style="background:#FFF3E0;border-left:6px solid #FF9800;padding:12px 14px;margin:8px 0 14px 0;">
-          <div style="font-weight:800;color:#E65100;margin-bottom:8px;">Read before starting</div>
-          <ul style="margin:0 0 8px 18px;">
-            <li>You will be shown <b>two routes at a time</b>. Choose which is more important using a <b>Score 1–9</b>.</li>
-            <li><b>Score meanings:</b>
-              <ul>
-                <li><b>1</b> = no difference between routes</li>
-                <li><b>3</b>, <b>5</b>, <b>7</b> = moderate, strong, very strong</li>
-                <li><b>2</b>, <b>6</b>, <b>8</b> = between anchors (1–3, 5–7, 7–9) → respectively: <i>equal to moderate</i>, <i>moderate to strong</i>, <i>strong to very strong</i></li>
-                <li><b>9</b> = extreme difference</li>
-              </ul>
-            </li>
-            <li><b>If the header route (top bar) is more important, pick a Score &gt; 1.</b></li>
-            <li><b>If the left route is more important, tick the <u>Reciprocal</u> box</b> — the app will store <code>1/Score</code>.</li>
-            <li>Complete all pairs, then click <b>Export&Send</b> to export results.</li>
-          </ul>
-        </div>
+**How to score each pairwise comparison**
+
+- **Score 1**: no difference between the two routes.  
+- **Scores 3, 5, 7**: *moderate*, *strong*, and *very strong* differences (left route more important than right).  
+- **Score 9**: *extreme* difference (left ≫ right).  
+- **Scores 2, 6, 8**: in-between values (*equal to moderate*, *moderate→strong*, *strong→very strong*).  
+- **If the right route is more important**, **tick the _Reciprocal_ box** (this sets the value to **1/score**).
+
+<div style="padding:0.6rem 0.8rem; border-left:6px solid #444; background:#f7f7f7;">
+<b>Read before starting:</b> <span style="color:#c0392b;"><b>Pick a score &gt; 1 if the left route is more important than the right;</b></span>  
+use the <b>Reciprocal</b> checkbox to flip direction (becomes <b>1/score</b>).
+</div>
         """,
         unsafe_allow_html=True
     )
 
-    with st.expander("Show all routes", expanded=False):
-        for i, r in enumerate(ROUTES, start=1):
-            st.write(f"{i}. {r}")
+    with st.expander("Show transmission routes", expanded=False):
+        for idx, r in enumerate(ROUTES, start=1):
+            st.write(f"**{idx}.** {r}")
 
     st.divider()
-    st.subheader("Expert information (optional to start)")
-    c1, c2 = st.columns([1.4, 1.6])
-    with c1:
-        st.session_state.expert_name = st.text_input(
-            "Your full name", value=st.session_state.expert_name, placeholder="e.g., Dr. Jane Doe"
-        )
-    with c2:
-        st.session_state.expert_credentials = st.text_input(
-            "Credentials / Institution", value=st.session_state.expert_credentials,
-            placeholder="e.g., DVM, PhD – Example University"
-        )
+    st.subheader("Expert identification")
+    colA, colB = st.columns(2)
+    with colA:
+        st.session_state.expert_name = st.text_input("Your name", value=st.session_state.expert_name).strip()
+    with colB:
+        st.session_state.expert_credentials = st.text_input("Your credentials / affiliation (optional)", value=st.session_state.expert_credentials).strip()
 
-    st.info("Click **Start ▶** to begin. You can enter/edit your name later on the Finish page.")
-    nav_buttons(show_back=False, show_next=True, next_label="Start ▶")
+    st.subheader("Email destination for results")
+    st.caption("If empty, the app will try to use `smtp.report_to` from Streamlit secrets.")
+    st.session_state.send_to_email = st.text_input("Send results to (email)", value=st.session_state.send_to_email).strip()
 
-def page_pair(k: int):
-    """k from 0..P-1 maps to a pair (i,j)."""
-    (i, j) = PAIRS[k]
-    header_bar()
+    st.divider()
+    disabled = len(st.session_state.expert_name) == 0
+    st.button("Start scoring", type="primary", disabled=disabled, on_click=lambda: _advance())
 
-    st.markdown(
-        f"""
-        <div style="padding:10px 14px;border-left:6px solid #1976D2;background:#E3F2FD;margin-bottom:10px;">
-          <div style="font-size:18px;font-weight:800;color:#0D47A1;">
-            Route {i+1}: {ROUTES[i]}
-          </div>
-          <div style="margin-top:6px;color:#0D47A1;">
-            <b>How to score:</b> Pick a <b>Score &gt; 1</b> if the header route (above) is more important than the route shown on the left.<br/>
-            <b>If the left route is more important, tick the <u>Reciprocal</u> box</b> to store <code>1/Score</code>.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+def _advance():
+    st.session_state.page_idx += 1
 
-    st.subheader(f"Pair {k+1} of {P}")
+def _back():
+    st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
 
-    col_left, col_right = st.columns([2.8, 1.8])
+def pair_page(k: int, ij: Tuple[int, int]):
+    i, j = ij
+    left_route = ROUTES[i]
+    right_route = ROUTES[j]
 
-    default_score, default_recip = 1, False
-    if (i, j) in st.session_state.pairs:
-        v = float(st.session_state.pairs[(i, j)])
-        if v >= 1:
-            default_score, default_recip = int(round(v)), False
-        else:
-            default_score, default_recip = int(round(1.0 / v)), True
+    st.markdown(f"### **{i+1}. {left_route}**")
+    st.caption("Compare the left route against the route shown on the right.")
 
-    with col_left:
-        st.markdown("**Route to compare**")
-        st.container(border=True).write(f"Route {j+1}: {ROUTES[j]}")
+    lcol, rcol = st.columns([1.6, 1.4], vertical_alignment="top")
 
-    with col_right:
-        st.markdown("**Score & Reciprocal**")
-        st.caption("Score (1–9)")
-        score_val = score_selectbox(f"score_{i}_{j}", default=default_score)
-        st.caption("Reciprocal (tick if left route > header)")
-        recip = st.checkbox("Left route is more important (use 1/Score)", key=f"rec_{i}_{j}", value=default_recip)
-        stored = (1.0 / score_val) if recip else float(score_val)
-        st.markdown(
-            f"<div style='margin-top:10px;color:#424242;'>Stored value: <code>{stored:.5f}</code></div>",
-            unsafe_allow_html=True
-        )
+    with lcol:
+        with st.container(border=True):
+            st.markdown("**Left route**")
+            st.write(f"{i+1}. {left_route}")
 
-    # Persist choice
-    st.session_state.pairs[(i, j)] = stored
+    with rcol:
+        with st.container(border=True):
+            st.markdown("**Compare against (Right route)**")
+            st.write(f"{j+1}. {right_route}")
 
-    nav_buttons(show_back=True, show_next=True)
-
-def page_finish():
-    header_bar()
-    st.header("Finish")
-
-    # Fill any missing with neutral 1.0
-    for (i, j) in PAIRS:
-        st.session_state.pairs.setdefault((i, j), 1.0)
-
-    # Compute AHP
-    M = matrix_from_pairs(N, st.session_state.pairs)
-    CR, CI, lam, w = consistency_ratio(M)
-
-    df = pd.DataFrame({"Route": ROUTES, "Importance_w": w})
-    df["Importance_w (%)"] = (df["Importance_w"] * 100).round(4)
-    df["Rank_Importance"] = df["Importance_w"].rank(ascending=False, method="min").astype(int)
-    df = df.sort_values("Rank_Importance").reset_index(drop=True)
-
-    st.success("All pairs completed. Click **Export & Send** to save your results.")
-    st.write(f"Consistency ratio (CR): **{CR:.3f}**")
-
-    # Ensure name/credentials can be set before export
-    st.subheader("Your details for the file/email")
-    c1, c2 = st.columns([1.4, 1.6])
-    with c1:
-        st.session_state.expert_name = st.text_input(
-            "Full name", value=st.session_state.expert_name, placeholder="e.g., Dr. Jane Doe"
-        )
-    with c2:
-        st.session_state.expert_credentials = st.text_input(
-            "Credentials / Institution", value=st.session_state.expert_credentials,
-            placeholder="e.g., DVM, PhD – Example University"
-        )
-
-    def build_excel() -> bytes:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine=ENGINE) as writer:
-            df[["Rank_Importance", "Route", "Importance_w", "Importance_w (%)"]].to_excel(
-                writer, sheet_name="Results", index=False
+            # Score selector (1–9, integers only)
+            score = st.selectbox(
+                "Score",
+                options=list(range(1, 10)),
+                index=0,
+                key=f"score_{i}_{j}"
             )
-            pd.DataFrame(M, index=ROUTES, columns=ROUTES).to_excel(writer, sheet_name="Aggregated_Matrix")
-            pd.DataFrame({
-                "Criterion": ["Importance"], "n (routes)": [N],
-                "lambda_max": [lam], "CI": [CI], "CR": [CR]
-            }).to_excel(writer, sheet_name="Consistency", index=False)
-            pd.DataFrame({
-                "Field": ["Expert name", "Credentials/Institution", "Timestamp (UTC)"],
-                "Value": [
-                    st.session_state.expert_name or "(not provided)",
-                    st.session_state.expert_credentials or "(not provided)",
-                    dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
-                ],
-            }).to_excel(writer, sheet_name="Metadata", index=False)
-        buf.seek(0)
-        return buf.read()
+            # Reciprocal toggle
+            recip = st.checkbox(
+                "Reciprocal (tick if the RIGHT route is more important than the LEFT)",
+                value=False,
+                key=f"recip_{i}_{j}"
+            )
 
-    expert_name = st.session_state.expert_name.strip()
-    expert_credentials = st.session_state.expert_credentials.strip()
-    filename = f"hpai_importance_results_{slugify(expert_name)}.xlsx"
+            # Store value immediately
+            val = 1.0 / float(score) if recip else float(score)
+            st.session_state.pairs_values[(i, j)] = val
 
-    cols = st.columns([2, 2])
-    with cols[0]:
-        if st.button("💾 Export & Send", key="export_send"):
-            try:
-                data = build_excel()
-                ok, msg = send_results_email(data, filename, expert_name, expert_credentials)
-                if ok:
-                    st.success(msg)
-                else:
-                    st.warning(msg)
-                st.download_button(
-                    label=f"Download results – {filename}",
-                    data=data,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_btn"
-                )
-            except Exception as e:
-                st.error(f"Export failed: {e}")
+            # Preview
+            st.caption("Preview of stored value:")
+            if recip:
+                st.write(f"**1/{score}** (right > left)")
+            else:
+                st.write(f"**{score}** (left > right)")
 
-    nav_buttons(show_back=True, show_next=False)
+    st.divider()
+    nav_left, nav_mid, nav_right = st.columns([1, 5, 1])
+    with nav_left:
+        st.button("Back", on_click=_back)
+    with nav_right:
+        st.button("Next", type="primary", on_click=_advance)
 
-# ---------------- Router ---------------- #
-page = st.session_state.page
-if page == 0:
-    page_intro()
-elif 1 <= page <= P:
-    page_pair(page - 1)
+def finish_page():
+    st.header("Finish")
+    st.write("You have completed all pairwise comparisons.")
+
+    # Basic summary table (top 10)
+    try:
+        excel_bytes = build_excel(st.session_state.expert_name, st.session_state.pairs_values)
+        # Read quick preview from Results
+        with io.BytesIO(excel_bytes) as b:
+            xls = pd.ExcelFile(b)
+            df_prev = pd.read_excel(xls, sheet_name="Results")
+        st.subheader("Preview of results")
+        st.dataframe(df_prev.head(10))
+    except Exception as e:
+        st.error(f"Computation error: {e}")
+        st.stop()
+
+    st.divider()
+    # Export & email
+    export_name_slim = st.session_state.expert_name.strip().replace(" ", "_")
+    file_name = f"HPAI_AHP_Importance_{export_name_slim}.xlsx"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            label="Download Excel results",
+            data=excel_bytes,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with col2:
+        to_email = st.session_state.send_to_email or st.secrets.get("smtp", {}).get("report_to", "")
+        if to_email:
+            if st.button(f"Send results to {to_email}", type="primary"):
+                try:
+                    subject = f"AHP Results – HPAI Transmission Routes (Importance) – {st.session_state.expert_name}"
+                    creds_info = f" ({st.session_state.expert_credentials})" if st.session_state.expert_credentials else ""
+                    body = (
+                        f"Dear team,\n\n"
+                        f"Attached are the AHP (Importance only) results for HPAI Transmission Routes.\n"
+                        f"Expert: {st.session_state.expert_name}{creds_info}\n\n"
+                        f"Best regards."
+                    )
+                    send_results_email(to_email, subject, body, excel_bytes, file_name)
+                    st.success("Email sent.")
+                except Exception as e:
+                    st.error(f"Email failed: {e}")
+        else:
+            st.info("Enter a destination email on the Intro page or configure `smtp.report_to` in Streamlit secrets.")
+
+    st.divider()
+    st.button("Start over", on_click=lambda: _reset())
+
+def _reset():
+    st.session_state.page_idx = 0
+    st.session_state.pairs_values = {}
+    # Keep name/credentials/email as-is for convenience
+
+
+# =========================== PAGE ROUTER =========================== #
+pairs = pairs_seq  # list of (i,j)
+total_pair_pages = len(pairs)
+
+if page_idx == 0:
+    intro_page()
+elif 1 <= page_idx <= total_pair_pages:
+    # 1-based indexing for page number; fetch pair by index-1
+    current_pair = pairs[page_idx - 1]
+    # Show a little progress
+    st.progress(page_idx / total_pair_pages, text=f"Pair {page_idx} of {total_pair_pages}")
+    pair_page(page_idx, current_pair)
 else:
-    page_finish()
+    finish_page()
