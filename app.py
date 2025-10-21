@@ -183,7 +183,7 @@ def nav_buttons(show_back=True, show_next=True, next_label="Next"):
 # ---------------- Pages ---------------- #
 def page_intro():
     st.title("HPAI Transmission Routes")
-    st.markdown("Experts enter pairwise comparisons for **Importance (Score 1–9)**.")
+    st.markdown("Experts pairwise comparisons for **Importance (Score 1–9)**.")
 
     # Clear, highlighted instructions with detailed scale meaning
     st.markdown(
