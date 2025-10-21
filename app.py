@@ -200,8 +200,8 @@ def page_intro():
                 <li><b>9</b> = extreme difference</li>
               </ul>
             </li>
-            <li>If the <b>header route</b> (top bar) is more important, choose a <b>Score &gt; 1</b>.</li>
-            <li>If the <b>left route</b> (the one in the box) is more important, tick <b>Reciprocal</b> to apply <code>1/Score</code>.</li>
+            <li><b>If the header route (top bar) is more important, pick a Score &gt; 1.</b></li>
+            <li><b>If the left route is more important, tick the <u>Reciprocal</u> box</b> — the app will store <code>1/Score</code>.</li>
             <li>Complete all pairs, then click <b>Finish</b> to export results.</li>
           </ul>
         </div>
@@ -242,7 +242,7 @@ def page_pair(k: int):
           </div>
           <div style="margin-top:6px;color:#0D47A1;">
             <b>How to score:</b> Pick a <b>Score &gt; 1</b> if the header route (above) is more important than the route shown on the left.<br/>
-            If the left route is more important, tick <b>Reciprocal</b> to apply <code>1/Score</code>.
+            <b>If the left route is more important, tick the <u>Reciprocal</u> box</b> to store <code>1/Score</code>.
           </div>
         </div>
         """,
@@ -251,7 +251,7 @@ def page_pair(k: int):
 
     st.subheader(f"Pair {k+1} of {P}")
 
-    col_left, col_right = st.columns([2.8, 1.6])
+    col_left, col_right = st.columns([2.8, 1.8])
 
     default_score, default_recip = 1, False
     if (i, j) in st.session_state.pairs:
@@ -269,8 +269,8 @@ def page_pair(k: int):
         st.markdown("**Score & Reciprocal**")
         st.caption("Score (1–9)")
         score_val = score_selectbox(f"score_{i}_{j}", default=default_score)
-        st.caption("Reciprocal?")
-        recip = st.checkbox(" ", key=f"rec_{i}_{j}", value=default_recip)
+        st.caption("Reciprocal (tick if left route > header)")
+        recip = st.checkbox("Left route is more important (use 1/Score)", key=f"rec_{i}_{j}", value=default_recip)
         stored = (1.0 / score_val) if recip else float(score_val)
         st.markdown(
             f"<div style='margin-top:10px;color:#424242;'>Stored value: <code>{stored:.5f}</code></div>",
