@@ -10,7 +10,7 @@ Run: streamlit run app.py
 """
 
 from __future__ import annotations
-import io, os, re, datetime as dt, subprocess, sys, smtplib
+import io, re, datetime as dt, subprocess, sys, smtplib
 from email.message import EmailMessage
 import numpy as np
 import pandas as pd
@@ -53,8 +53,15 @@ SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
             9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59}
 
 SCORE_SCALE = {
-    "1 (equal)": 1, "2 (between 1–3)": 2, "3 (moderate)": 3, "4 (between 3–5)": 4,
-    "5 (strong)": 5, "6 (between 5–7)": 6, "7 (very strong)": 7, "8 (between 7–9)": 8, "9 (extreme)": 9,
+    "1 (no difference)": 1,
+    "2 (between 1–3)": 2,
+    "3 (moderate)": 3,
+    "4 (between 3–5)": 4,
+    "5 (strong)": 5,
+    "6 (between 5–7)": 6,
+    "7 (very strong)": 7,
+    "8 (between 7–9)": 8,
+    "9 (extreme)": 9,
 }
 
 # ---------------- AHP core ---------------- #
@@ -104,13 +111,13 @@ def send_results_email(attachment_bytes: bytes, filename: str, expert_name: str,
         return False, "SMTP settings missing (host/user/password). Add them to st.secrets['email'] to enable auto-email."
 
     msg = EmailMessage()
-    msg["Subject"] = f"HPAI AHP Importance Results – {expert_name}"
+    msg["Subject"] = f"HPAI AHP Importance Results – {expert_name or 'Unnamed Expert'}"
     msg["From"] = user
     msg["To"] = to_addr
     body = (
         f"Automatic submission from the HPAI Transmission Routes app.\n\n"
-        f"Expert: {expert_name}\n"
-        f"Credentials/Institution: {expert_credentials}\n"
+        f"Expert: {expert_name or '(not provided)'}\n"
+        f"Credentials/Institution: {expert_credentials or '(not provided)'}\n"
         f"Timestamp (UTC): {dt.datetime.utcnow().isoformat(timespec='seconds')}Z\n\n"
         f"Attached: {filename}\n"
     )
@@ -135,17 +142,24 @@ st.set_page_config(page_title="HPAI Transmission Routes – Wizard (Pairs)", lay
 
 if "page" not in st.session_state:
     st.session_state.page = 0
-
 if "pairs" not in st.session_state:
     st.session_state.pairs = {}
-
 if "expert_name" not in st.session_state:
     st.session_state.expert_name = ""
-
 if "expert_credentials" not in st.session_state:
     st.session_state.expert_credentials = ""
 
-# ---------------- UI helpers ---------------- #
+# ---------------- Navigation helpers ---------------- #
+def goto_page(p: int):
+    st.session_state.page = max(0, min(P + 1, p))
+    st.rerun()
+
+def next_page():
+    goto_page(st.session_state.page + 1)
+
+def back_page():
+    goto_page(st.session_state.page - 1)
+
 def header_bar():
     total_pages = P + 2
     st.markdown(f"**Step {st.session_state.page+1} / {total_pages}**")
@@ -160,27 +174,34 @@ def score_selectbox(key: str, default=1):
 def nav_buttons(show_back=True, show_next=True, next_label="Next"):
     cols = st.columns([1,1,6,2])
     with cols[0]:
-        if show_back and st.button("◀ Back"):
-            st.session_state.page = max(0, st.session_state.page - 1)
-            st.rerun()
+        if show_back and st.button("◀ Back", key=f"back_{st.session_state.page}"):
+            back_page()
     with cols[3]:
-        if show_next and st.button(next_label):
-            st.session_state.page = min(P + 1, st.session_state.page + 1)
-            st.rerun()
+        if show_next and st.button(next_label, key=f"next_{st.session_state.page}"):
+            next_page()
 
 # ---------------- Pages ---------------- #
 def page_intro():
     st.title("HPAI Transmission Routes")
     st.markdown("Experts enter pairwise comparisons for **Importance (Score 1–9)**.")
 
+    # Clear, highlighted instructions with detailed scale meaning
     st.markdown(
         """
         <div style="background:#FFF3E0;border-left:6px solid #FF9800;padding:12px 14px;margin:8px 0 14px 0;">
-          <div style="font-weight:700;color:#E65100;margin-bottom:6px;">Read before starting</div>
-          <ul style="margin:0 0 4px 18px;">
+          <div style="font-weight:800;color:#E65100;margin-bottom:8px;">Read before starting</div>
+          <ul style="margin:0 0 8px 18px;">
             <li>You will be shown <b>two routes at a time</b>. Choose which is more important using a <b>Score 1–9</b>.</li>
-            <li>If the <b>header route</b> is more important, pick a score <b>&gt; 1</b>.</li>
-            <li>If the <b>compared route</b> is more important, tick <b>Reciprocal</b> (applies <code>1/Score</code>).</li>
+            <li><b>Score meanings:</b>
+              <ul>
+                <li><b>1</b> = no difference between routes</li>
+                <li><b>3</b>, <b>5</b>, <b>7</b> = moderate, strong, very strong</li>
+                <li><b>2</b>, <b>6</b>, <b>8</b> = between anchors (1–3, 5–7, 7–9) → respectively: <i>equal to moderate</i>, <i>moderate to strong</i>, <i>strong to very strong</i></li>
+                <li><b>9</b> = extreme difference</li>
+              </ul>
+            </li>
+            <li>If the <b>header route</b> (top bar) is more important, choose a <b>Score &gt; 1</b>.</li>
+            <li>If the <b>left route</b> (the one in the box) is more important, tick <b>Reciprocal</b> to apply <code>1/Score</code>.</li>
             <li>Complete all pairs, then click <b>Finish</b> to export results.</li>
           </ul>
         </div>
@@ -193,11 +214,11 @@ def page_intro():
             st.write(f"{i}. {r}")
 
     st.divider()
-    st.subheader("Expert information")
+    st.subheader("Expert information (optional to start)")
     c1, c2 = st.columns([1.4, 1.6])
     with c1:
         st.session_state.expert_name = st.text_input(
-            "Your full name*", value=st.session_state.expert_name, placeholder="e.g., Dr. Jane Doe"
+            "Your full name", value=st.session_state.expert_name, placeholder="e.g., Dr. Jane Doe"
         )
     with c2:
         st.session_state.expert_credentials = st.text_input(
@@ -205,14 +226,11 @@ def page_intro():
             placeholder="e.g., DVM, PhD – Example University"
         )
 
-    disabled = (st.session_state.expert_name.strip() == "")
-    st.info("Click **Next** to begin. You can go back anytime.")
-    nav_buttons(show_back=False, show_next=not disabled, next_label="Start ▶")
-    if disabled:
-        st.stop()
+    st.info("Click **Start ▶** to begin. You can enter/edit your name later on the Finish page.")
+    nav_buttons(show_back=False, show_next=True, next_label="Start ▶")
 
 def page_pair(k: int):
-    """k from 0..P-1 maps to a pair (i,j). UI shows header route only once."""
+    """k from 0..P-1 maps to a pair (i,j)."""
     (i, j) = PAIRS[k]
     header_bar()
 
@@ -233,7 +251,7 @@ def page_pair(k: int):
 
     st.subheader(f"Pair {k+1} of {P}")
 
-    col_left, col_right = st.columns([2.8, 1.6], vertical_alignment="top")
+    col_left, col_right = st.columns([2.8, 1.6])
 
     default_score, default_recip = 1, False
     if (i, j) in st.session_state.pairs:
@@ -253,22 +271,26 @@ def page_pair(k: int):
         score_val = score_selectbox(f"score_{i}_{j}", default=default_score)
         st.caption("Reciprocal?")
         recip = st.checkbox(" ", key=f"rec_{i}_{j}", value=default_recip)
-        preview = (1.0 / score_val) if recip else float(score_val)
+        stored = (1.0 / score_val) if recip else float(score_val)
         st.markdown(
-            f"<div style='margin-top:10px;color:#424242;'>Stored value: <code>{preview:.5f}</code></div>",
+            f"<div style='margin-top:10px;color:#424242;'>Stored value: <code>{stored:.5f}</code></div>",
             unsafe_allow_html=True
         )
 
-    st.session_state.pairs[(i, j)] = (1.0 / score_val) if recip else float(score_val)
+    # Persist choice
+    st.session_state.pairs[(i, j)] = stored
+
     nav_buttons(show_back=True, show_next=True)
 
 def page_finish():
     header_bar()
     st.header("Finish")
 
+    # Fill any missing with neutral 1.0
     for (i, j) in PAIRS:
         st.session_state.pairs.setdefault((i, j), 1.0)
 
+    # Compute AHP
     M = matrix_from_pairs(N, st.session_state.pairs)
     CR, CI, lam, w = consistency_ratio(M)
 
@@ -279,6 +301,19 @@ def page_finish():
 
     st.success("All pairs completed. Click **Export & Send** to save your results.")
     st.write(f"Consistency ratio (CR): **{CR:.3f}**")
+
+    # Ensure name/credentials can be set before export
+    st.subheader("Your details for the file/email")
+    c1, c2 = st.columns([1.4, 1.6])
+    with c1:
+        st.session_state.expert_name = st.text_input(
+            "Full name", value=st.session_state.expert_name, placeholder="e.g., Dr. Jane Doe"
+        )
+    with c2:
+        st.session_state.expert_credentials = st.text_input(
+            "Credentials / Institution", value=st.session_state.expert_credentials,
+            placeholder="e.g., DVM, PhD – Example University"
+        )
 
     def build_excel() -> bytes:
         buf = io.BytesIO()
@@ -294,8 +329,8 @@ def page_finish():
             pd.DataFrame({
                 "Field": ["Expert name", "Credentials/Institution", "Timestamp (UTC)"],
                 "Value": [
-                    st.session_state.expert_name,
-                    st.session_state.expert_credentials,
+                    st.session_state.expert_name or "(not provided)",
+                    st.session_state.expert_credentials or "(not provided)",
                     dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
                 ],
             }).to_excel(writer, sheet_name="Metadata", index=False)
@@ -306,9 +341,9 @@ def page_finish():
     expert_credentials = st.session_state.expert_credentials.strip()
     filename = f"hpai_importance_results_{slugify(expert_name)}.xlsx"
 
-    c = st.columns([2, 2])
-    with c[0]:
-        if st.button("💾 Export & Send"):
+    cols = st.columns([2, 2])
+    with cols[0]:
+        if st.button("💾 Export & Send", key="export_send"):
             try:
                 data = build_excel()
                 ok, msg = send_results_email(data, filename, expert_name, expert_credentials)
@@ -320,7 +355,8 @@ def page_finish():
                     label=f"Download results – {filename}",
                     data=data,
                     file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_btn"
                 )
             except Exception as e:
                 st.error(f"Export failed: {e}")
