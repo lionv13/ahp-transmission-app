@@ -202,7 +202,7 @@ def page_intro():
             </li>
             <li><b>If the header route (top bar) is more important, pick a Score &gt; 1.</b></li>
             <li><b>If the left route is more important, tick the <u>Reciprocal</u> box</b> — the app will store <code>1/Score</code>.</li>
-            <li>Complete all pairs, then click <b>Finish</b> to export results.</li>
+            <li>Complete all pairs, then click <b>Export&Send</b> to export results.</li>
           </ul>
         </div>
         """,
