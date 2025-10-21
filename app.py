@@ -6,7 +6,7 @@ Wizard: Intro → one page per pairwise comparison → Finish & Export
 - Experts enter pairwise comparisons for Importance (Score 1–9).
 - Steps 3–5 (weights, consistency, matrix, ranking) are computed internally.
 - Exports an Excel file named with the expert's name.
-- Emails results automatically (SMTP creds from Streamlit secrets).
+- Emails results automatically to smtp.report_to (from Streamlit secrets).
 
 Run locally:  streamlit run app.py
 """
@@ -195,9 +195,6 @@ if "expert_name" not in st.session_state:
     st.session_state.expert_name = ""
 if "expert_credentials" not in st.session_state:
     st.session_state.expert_credentials = ""
-if "send_to_email" not in st.session_state:
-    # Default to secrets if present; otherwise empty
-    st.session_state.send_to_email = st.secrets.get("smtp", {}).get("report_to", "")
 
 pairs_seq = st.session_state.pairs_list
 page_idx = st.session_state.page_idx
@@ -236,10 +233,6 @@ use the <b>Reciprocal</b> checkbox to flip direction (becomes <b>1/score</b>).
         st.session_state.expert_name = st.text_input("Your name", value=st.session_state.expert_name).strip()
     with colB:
         st.session_state.expert_credentials = st.text_input("Your credentials / affiliation (optional)", value=st.session_state.expert_credentials).strip()
-
-    st.subheader("Email destination for results")
-    st.caption("If empty, the app will try to use `smtp.report_to` from Streamlit secrets.")
-    st.session_state.send_to_email = st.text_input("Send results to (email)", value=st.session_state.send_to_email).strip()
 
     st.divider()
     disabled = len(st.session_state.expert_name) == 0
@@ -307,10 +300,9 @@ def finish_page():
     st.header("Finish")
     st.write("You have completed all pairwise comparisons.")
 
-    # Basic summary table (top 10)
+    # Compute and preview
     try:
         excel_bytes = build_excel(st.session_state.expert_name, st.session_state.pairs_values)
-        # Read quick preview from Results
         with io.BytesIO(excel_bytes) as b:
             xls = pd.ExcelFile(b)
             df_prev = pd.read_excel(xls, sheet_name="Results")
@@ -321,7 +313,7 @@ def finish_page():
         st.stop()
 
     st.divider()
-    # Export & email
+    # Export & auto-email (to secrets)
     export_name_slim = st.session_state.expert_name.strip().replace(" ", "_")
     file_name = f"HPAI_AHP_Importance_{export_name_slim}.xlsx"
 
@@ -335,7 +327,7 @@ def finish_page():
         )
 
     with col2:
-        to_email = st.session_state.send_to_email or st.secrets.get("smtp", {}).get("report_to", "")
+        to_email = st.secrets.get("smtp", {}).get("report_to", "")
         if to_email:
             if st.button(f"Send results to {to_email}", type="primary"):
                 try:
@@ -352,7 +344,7 @@ def finish_page():
                 except Exception as e:
                     st.error(f"Email failed: {e}")
         else:
-            st.info("Enter a destination email on the Intro page or configure `smtp.report_to` in Streamlit secrets.")
+            st.info("Configure `smtp.report_to` in Streamlit secrets to enable automatic emailing.")
 
     st.divider()
     st.button("Start over", on_click=lambda: _reset())
@@ -360,7 +352,7 @@ def finish_page():
 def _reset():
     st.session_state.page_idx = 0
     st.session_state.pairs_values = {}
-    # Keep name/credentials/email as-is for convenience
+    # Keep name/credentials as-is for convenience
 
 
 # =========================== PAGE ROUTER =========================== #
@@ -372,7 +364,6 @@ if page_idx == 0:
 elif 1 <= page_idx <= total_pair_pages:
     # 1-based indexing for page number; fetch pair by index-1
     current_pair = pairs[page_idx - 1]
-    # Show a little progress
     st.progress(page_idx / total_pair_pages, text=f"Pair {page_idx} of {total_pair_pages}")
     pair_page(page_idx, current_pair)
 else:
