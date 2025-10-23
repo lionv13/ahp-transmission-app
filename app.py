@@ -3,16 +3,15 @@
 HPAI Transmission Routes – AHP (Importance only)
 Wizard: Intro → one page per pairwise comparison → Finish & Export
 
-- Experts enter pairwise comparisons for Importance (Score 1–9).
-- Steps 3–5 (weights, consistency, matrix, ranking) are computed internally.
-- Exports an Excel file named with the expert's name.
-- Emails results automatically to smtp.report_to (from Streamlit secrets).
+Now supports:
+- Save draft (JSON) before finishing, and Load draft to resume later
+- Optional Draft Excel preview (fills missing pairs with 1 = neutral)
 
 Run locally:  streamlit run app.py
 """
 
 from __future__ import annotations
-import io
+import io, json
 from typing import Dict, Tuple, List
 
 import numpy as np
@@ -37,7 +36,9 @@ ROUTES: List[str] = [
 ]
 N = len(ROUTES)
 
-# Saaty Random Index (for CR). We keep this name even though UI says "Score"
+APP_VERSION = "1.2-partial-save"
+
+# Saaty Random Index (for CR)
 SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
             9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59}
 
@@ -48,7 +49,7 @@ def all_pairs(n: int) -> List[Tuple[int, int]]:
 
 @st.cache_data(show_spinner=False)
 def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
-    """Build reciprocal AHP matrix from i<j values."""
+    """Build reciprocal AHP matrix from i<j values (expects all pairs present)."""
     M = np.ones((n, n), dtype=float)
     for (i, j), v in pairs.items():
         if i == j:
@@ -58,6 +59,20 @@ def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> n
             raise ValueError("Score values must be > 0")
         M[i, j] = vv
         M[j, i] = 1.0 / vv
+    return M
+
+def matrix_from_upper_triangle_allow_missing(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
+    """
+    Build matrix when SOME pairs may be missing.
+    Missing values default to 1 (neutral) so a draft can be computed.
+    """
+    M = np.ones((n, n), dtype=float)
+    for i in range(n-1):
+        for j in range(i+1, n):
+            vv = float(pairs.get((i, j), 1.0))
+            vv = vv if vv > 0 else 1.0
+            M[i, j] = vv
+            M[j, i] = 1.0 / vv
     return M
 
 @st.cache_data(show_spinner=False)
@@ -125,17 +140,23 @@ def send_results_email(to_email: str, subject: str, body: str, attachment_bytes:
     smtp.send_message(msg)
 
 def build_excel(expert_name: str, pairs_I: Dict[Tuple[int, int], float]) -> bytes:
-    """Compute results and return an Excel file as bytes."""
+    """Compute FINAL results and return an Excel file as bytes. Expects all pairs present."""
+    # Validate completeness
+    expected = set(all_pairs(N))
+    missing = expected - set(pairs_I.keys())
+    if missing:
+        raise ValueError(f"Cannot build final Excel: {len(missing)} comparisons are still missing.")
+
     M_I = matrix_from_upper_triangle(N, pairs_I)
     CR_I, CI_I, lam_I, w_I = consistency_ratio(M_I)
 
-    # Single-criterion “Risk” equals Importance weights (kept for naming continuity)
+    # Single-criterion “Risk” equals Importance weights
     risk = w_I / np.sum(w_I)
 
     df = pd.DataFrame({
         "Route": ROUTES,
         "Importance_w": w_I,
-        "Risk_w": risk,  # identical to Importance here
+        "Risk_w": risk,
     })
 
     # Ranks
@@ -178,6 +199,56 @@ def build_excel(expert_name: str, pairs_I: Dict[Tuple[int, int], float]) -> byte
         # Metadata
         meta = pd.DataFrame({
             "Expert Name": [expert_name],
+            "App Version": [APP_VERSION],
+        })
+        meta.to_excel(writer, sheet_name="Meta", index=False)
+
+    buf.seek(0)
+    return buf.read()
+
+def build_excel_draft(expert_name: str, pairs_partial: Dict[Tuple[int, int], float]) -> bytes:
+    """
+    Build a DRAFT Excel even if some pairs are missing.
+    Missing comparisons are filled with 1 (neutral).
+    """
+    M_I = matrix_from_upper_triangle_allow_missing(N, pairs_partial)
+    CR_I, CI_I, lam_I, w_I = consistency_ratio(M_I)
+    risk = w_I / np.sum(w_I)
+
+    df = pd.DataFrame({
+        "Route": ROUTES,
+        "Importance_w": w_I,
+        "Risk_w": risk,
+    })
+    df["Rank_Importance"] = df["Importance_w"].rank(ascending=False, method="min").astype(int)
+    df["Rank_Risk"]       = df["Risk_w"].rank(ascending=False, method="min").astype(int)
+    df["Importance_w (%)"] = (df["Importance_w"] * 100).round(4)
+    df["Risk_w (%)"]       = (df["Risk_w"] * 100).round(4)
+    df = df.sort_values("Rank_Risk").reset_index(drop=True)
+
+    buf = io.BytesIO()
+    engine = get_excel_engine()
+    with pd.ExcelWriter(buf, engine=engine) as writer:
+        df.to_excel(writer, sheet_name="Results (DRAFT)", index=False)
+
+        con = pd.DataFrame({
+            "Criterion": ["Importance (DRAFT)"],
+            "n (routes)": [N],
+            "lambda_max": [lam_I],
+            "CI": [CI_I],
+            "CR": [CR_I],
+            "Note": ["Some missing comparisons were set to 1 (neutral)."]
+        })
+        con.to_excel(writer, sheet_name="Consistency", index=False)
+
+        pd.DataFrame(M_I, index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+                        columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)]
+                    ).to_excel(writer, sheet_name="Aggregated_Matrix", index=True)
+
+        meta = pd.DataFrame({
+            "Expert Name": [expert_name],
+            "App Version": [APP_VERSION],
+            "Status": ["DRAFT (incomplete comparisons)"]
         })
         meta.to_excel(writer, sheet_name="Meta", index=False)
 
@@ -198,6 +269,76 @@ if "expert_credentials" not in st.session_state:
 
 pairs_seq = st.session_state.pairs_list
 page_idx = st.session_state.page_idx
+
+# =========================== DRAFT SAVE/LOAD =========================== #
+def serialize_draft() -> str:
+    """Return JSON string containing current progress."""
+    pairs_serialized = {f"{i},{j}": float(v) for (i, j), v in st.session_state.pairs_values.items()}
+    draft = {
+        "version": APP_VERSION,
+        "routes": ROUTES,
+        "n": N,
+        "page_idx": st.session_state.page_idx,
+        "expert_name": st.session_state.expert_name,
+        "expert_credentials": st.session_state.expert_credentials,
+        "pairs": pairs_serialized,
+    }
+    return json.dumps(draft, ensure_ascii=False, indent=2)
+
+def load_draft(draft_json: str):
+    """Load a draft JSON into session state."""
+    d = json.loads(draft_json)
+    # Basic sanity checks
+    if d.get("n") != N or d.get("routes") != ROUTES:
+        st.warning("Draft routes do not match current app routes. Loading skipped.")
+        return
+    st.session_state.expert_name = d.get("expert_name", "")
+    st.session_state.expert_credentials = d.get("expert_credentials", "")
+    st.session_state.page_idx = int(d.get("page_idx", 0))
+    pairs_map = {}
+    for k, v in d.get("pairs", {}).items():
+        i_s, j_s = [x.strip() for x in k.split(",")]
+        pairs_map[(int(i_s), int(j_s))] = float(v)
+    st.session_state.pairs_values = pairs_map
+    st.success("Draft loaded.")
+
+# Sidebar: Save/Resume
+with st.sidebar:
+    st.subheader("Save / Resume")
+    st.caption("Save a draft JSON anytime and load it later to resume where you left off.")
+    # Save draft
+    draft_bytes = serialize_draft().encode("utf-8")
+    st.download_button(
+        label="💾 Save draft (JSON)",
+        data=draft_bytes,
+        file_name="hpai_ahp_importance_draft.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+    # Load draft
+    up = st.file_uploader("Load draft (JSON)", type=["json"], label_visibility="collapsed")
+    if up is not None:
+        try:
+            load_draft(up.read().decode("utf-8"))
+        except Exception as e:
+            st.error(f"Failed to load draft: {e}")
+
+    st.markdown("---")
+    # Optional: Draft Excel preview
+    if st.toggle("Create Draft Excel (fill missing with 1)", value=False):
+        try:
+            excel_draft = build_excel_draft(st.session_state.expert_name or "Anonymous", st.session_state.pairs_values)
+            st.download_button(
+                label="⬇️ Download Draft Excel",
+                data=excel_draft,
+                file_name="HPAI_AHP_Importance_DRAFT.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            st.caption("Draft uses 1 (neutral) for any missing comparisons.")
+        except Exception as e:
+            st.error(f"Draft build error: {e}")
 
 # =============================== UI ================================= #
 def intro_page():
@@ -264,7 +405,7 @@ def pair_page(k: int, ij: Tuple[int, int]):
             st.markdown("**Compare against (Right route)**")
             st.write(f"{j+1}. {right_route}")
 
-            # Score selector (1–9, integers only)
+            # Score selector (1–9)
             score = st.selectbox(
                 "Score",
                 options=list(range(1, 10)),
@@ -300,7 +441,7 @@ def finish_page():
     st.header("Finish")
     st.write("You have completed all pairwise comparisons.")
 
-    # Compute and preview
+    # Compute and preview (requires completeness)
     try:
         excel_bytes = build_excel(st.session_state.expert_name, st.session_state.pairs_values)
         with io.BytesIO(excel_bytes) as b:
@@ -309,7 +450,7 @@ def finish_page():
         st.subheader("Preview of results")
         st.dataframe(df_prev.head(10))
     except Exception as e:
-        st.error(f"Computation error: {e}")
+        st.error(f"Computation error (are all comparisons filled?): {e}")
         st.stop()
 
     st.divider()
@@ -354,17 +495,15 @@ def _reset():
     st.session_state.pairs_values = {}
     # Keep name/credentials as-is for convenience
 
-
 # =========================== PAGE ROUTER =========================== #
 pairs = pairs_seq  # list of (i,j)
 total_pair_pages = len(pairs)
 
-if page_idx == 0:
+if st.session_state.page_idx == 0:
     intro_page()
-elif 1 <= page_idx <= total_pair_pages:
-    # 1-based indexing for page number; fetch pair by index-1
-    current_pair = pairs[page_idx - 1]
-    st.progress(page_idx / total_pair_pages, text=f"Pair {page_idx} of {total_pair_pages}")
-    pair_page(page_idx, current_pair)
+elif 1 <= st.session_state.page_idx <= total_pair_pages:
+    current_pair = pairs[st.session_state.page_idx - 1]
+    st.progress(st.session_state.page_idx / total_pair_pages, text=f"Pair {st.session_state.page_idx} of {total_pair_pages}")
+    pair_page(st.session_state.page_idx, current_pair)
 else:
     finish_page()
