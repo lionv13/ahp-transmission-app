@@ -36,7 +36,7 @@ ROUTES: List[str] = [
     "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",
 ]
 N = len(ROUTES)
-APP_VERSION = "1.3-detailed-instructions"
+APP_VERSION = "1.4-instructions-refined"
 
 # Saaty Random Index (for CR)
 SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
@@ -44,12 +44,10 @@ SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
 
 # ============================= HELPERS =============================== #
 def all_pairs(n: int) -> List[Tuple[int, int]]:
-    """Return list of index pairs (i, j) with i<j."""
-    return [(i, j) for i in range(n-1) for j in range(i+1, n)]
+    return [(i, j) for i in range(n - 1) for j in range(i + 1, n)]
 
 @st.cache_data(show_spinner=False)
 def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
-    """Build reciprocal AHP matrix from i<j values."""
     M = np.ones((n, n), dtype=float)
     for (i, j), v in pairs.items():
         M[i, j] = float(v)
@@ -57,10 +55,9 @@ def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> n
     return M
 
 def matrix_from_upper_triangle_allow_missing(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
-    """Build matrix allowing missing values (default=1)."""
     M = np.ones((n, n), dtype=float)
-    for i in range(n-1):
-        for j in range(i+1, n):
+    for i in range(n - 1):
+        for j in range(i + 1, n):
             val = float(pairs.get((i, j), 1.0))
             M[i, j] = val
             M[j, i] = 1.0 / val
@@ -118,30 +115,33 @@ def send_results_email(to_email: str, subject: str, body: str, attachment_bytes:
     smtp.send_message(msg)
 
 # ============================ EXCEL BUILDERS ============================ #
-def build_excel(expert_name: str, pairs: Dict[Tuple[int,int], float]) -> bytes:
-    """Build final Excel (all pairs filled)."""
+def build_excel(expert_name: str, pairs: Dict[Tuple[int, int], float]) -> bytes:
     M = matrix_from_upper_triangle(N, pairs)
     CR, CI, lam, w = consistency_ratio(M)
     risk = w / np.sum(w)
     df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": risk})
     df["Rank_Importance"] = df["Importance_w"].rank(ascending=False).astype(int)
     df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
-    df["Importance_w (%)"] = df["Importance_w"]*100
-    df["Risk_w (%)"] = df["Risk_w"]*100
+    df["Importance_w (%)"] = df["Importance_w"] * 100
+    df["Risk_w (%)"] = df["Risk_w"] * 100
     df = df.sort_values("Rank_Risk").reset_index(drop=True)
     buf = io.BytesIO()
     engine = get_excel_engine()
     with pd.ExcelWriter(buf, engine=engine) as wtr:
         df.to_excel(wtr, "Results", index=False)
-        pd.DataFrame({"Criterion":["Importance"],"λmax":[lam],"CI":[CI],"CR":[CR]}).to_excel(wtr,"Consistency",index=False)
-        pd.DataFrame(M,index=[f"{i+1}. {r}" for i,r in enumerate(ROUTES)],
-                     columns=[f"{i+1}. {r}" for i,r in enumerate(ROUTES)]).to_excel(wtr,"Matrix")
-        pd.DataFrame({"Expert":[expert_name],"Version":[APP_VERSION]}).to_excel(wtr,"Meta",index=False)
+        pd.DataFrame({"Criterion": ["Importance"], "λmax": [lam], "CI": [CI], "CR": [CR]}).to_excel(
+            wtr, "Consistency", index=False
+        )
+        pd.DataFrame(
+            M,
+            index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+            columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+        ).to_excel(wtr, "Matrix")
+        pd.DataFrame({"Expert": [expert_name], "Version": [APP_VERSION]}).to_excel(wtr, "Meta", index=False)
     buf.seek(0)
     return buf.read()
 
 def build_excel_draft(expert_name: str, pairs_partial: Dict[Tuple[int, int], float]) -> bytes:
-    """Build a draft Excel (missing pairs = 1)."""
     M = matrix_from_upper_triangle_allow_missing(N, pairs_partial)
     CR, CI, lam, w = consistency_ratio(M)
     df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": w})
@@ -150,16 +150,23 @@ def build_excel_draft(expert_name: str, pairs_partial: Dict[Tuple[int, int], flo
     engine = get_excel_engine()
     with pd.ExcelWriter(buf, engine=engine) as wtr:
         df.to_excel(wtr, "Results (DRAFT)", index=False)
-        pd.DataFrame({"Note":["Some pairs missing, set to 1"],"λmax":[lam],"CI":[CI],"CR":[CR]}).to_excel(wtr,"Consistency",index=False)
+        pd.DataFrame(
+            {"Note": ["Some pairs missing, set to 1"], "λmax": [lam], "CI": [CI], "CR": [CR]}
+        ).to_excel(wtr, "Consistency", index=False)
     buf.seek(0)
     return buf.read()
 
 # ============================ STATE SETUP ============================ #
-if "page_idx" not in st.session_state: st.session_state.page_idx = 0
-if "pairs_list" not in st.session_state: st.session_state.pairs_list = all_pairs(N)
-if "pairs_values" not in st.session_state: st.session_state.pairs_values = {}
-if "expert_name" not in st.session_state: st.session_state.expert_name = ""
-if "expert_credentials" not in st.session_state: st.session_state.expert_credentials = ""
+if "page_idx" not in st.session_state:
+    st.session_state.page_idx = 0
+if "pairs_list" not in st.session_state:
+    st.session_state.pairs_list = all_pairs(N)
+if "pairs_values" not in st.session_state:
+    st.session_state.pairs_values = {}
+if "expert_name" not in st.session_state:
+    st.session_state.expert_name = ""
+if "expert_credentials" not in st.session_state:
+    st.session_state.expert_credentials = ""
 
 pairs_seq = st.session_state.pairs_list
 page_idx = st.session_state.page_idx
@@ -171,19 +178,19 @@ def serialize_draft() -> str:
         "name": st.session_state.expert_name,
         "cred": st.session_state.expert_credentials,
         "page": st.session_state.page_idx,
-        "pairs": {f"{i},{j}": v for (i,j),v in st.session_state.pairs_values.items()}
+        "pairs": {f"{i},{j}": v for (i, j), v in st.session_state.pairs_values.items()},
     }
     return json.dumps(data, indent=2)
 
 def load_draft(txt: str):
     d = json.loads(txt)
-    st.session_state.expert_name = d.get("name","")
-    st.session_state.expert_credentials = d.get("cred","")
-    st.session_state.page_idx = d.get("page",0)
+    st.session_state.expert_name = d.get("name", "")
+    st.session_state.expert_credentials = d.get("cred", "")
+    st.session_state.page_idx = d.get("page", 0)
     pairs = {}
-    for k,v in d.get("pairs",{}).items():
-        i,j = map(int,k.split(","))
-        pairs[(i,j)] = float(v)
+    for k, v in d.get("pairs", {}).items():
+        i, j = map(int, k.split(","))
+        pairs[(i, j)] = float(v)
     st.session_state.pairs_values = pairs
     st.success("Draft loaded successfully.")
 
@@ -193,7 +200,8 @@ with st.sidebar:
     st.download_button("⬇️ Save draft (JSON)", serialize_draft().encode(),
                        "hpai_ahp_draft.json", "application/json", use_container_width=True)
     uploaded = st.file_uploader("Load draft", type="json")
-    if uploaded: load_draft(uploaded.read().decode())
+    if uploaded:
+        load_draft(uploaded.read().decode())
     st.markdown("---")
     if st.toggle("Generate Draft Excel (fill missing with 1)", value=False):
         try:
@@ -212,23 +220,23 @@ def intro_page():
         """
 ## 🧭 Instructions for completing the evaluation
 
-1. **To start the evaluation**, click on **Start scoring** below.
-2. You will see pairs of transmission routes.  
-   For **each pair**, assign a **score** (1–9) following the guide below:
-   - **1** → no difference between routes.  
+1. **To start the evaluation**, click on **Start scoring** below.  
+2. You will see **pairs of transmission routes**.  
+   For **each pair**, assign a **score (1–9)** following the scale explained below:
+   - **1** → no difference between the two routes.  
    - **3, 5, 7** → moderate, strong, and very strong difference (left > right).  
    - **9** → extreme difference (left ≫ right).  
    - **2, 6, 8** → in-between values.  
    - If the **right route** is more important → **tick the “Reciprocal” box** (sets the value to 1/score).
-3. After scoring a pair, click **Next** to continue.
-4. If you **cannot finish in one session**, open the sidebar on the left and:
+3. After scoring each pair, click **Next** to continue.  
+4. If you **cannot finish in one session**, open the left sidebar and:
    - Click **“Save draft (JSON)”** to download your progress file.  
-   - Later, reopen the app and **upload this file** under **“Load draft”** to resume.
+   - Later, reopen the app and **upload that file** to resume where you left off.
 5. Once you finish all comparisons:
-   - You will reach a **Finish page** where you can:
-     - **Download** a copy of your results as an Excel file.
-     - Click **“Send results”** — your answers will be automatically emailed to the central address.
-6. Your results are safely saved only when you export or email them.
+   - You’ll reach a **Finish page** where you can:
+     - **Download** a copy of your results (Excel file).  
+     - Click **“Send results”** — your answers will be automatically emailed to the evaluation team.
+6. Your results are saved only after you export or send them.
 
 ---
 
@@ -250,20 +258,27 @@ Use the <b>Reciprocal</b> checkbox if the right route is more important.
     with colA:
         st.session_state.expert_name = st.text_input("Your name", value=st.session_state.expert_name).strip()
     with colB:
-        st.session_state.expert_credentials = st.text_input("Your credentials / affiliation (optional)", value=st.session_state.expert_credentials).strip()
+        st.session_state.expert_credentials = st.text_input(
+            "Your credentials / affiliation (optional)", value=st.session_state.expert_credentials
+        ).strip()
 
     st.divider()
-    st.button("Start scoring", type="primary", disabled=len(st.session_state.expert_name)==0, on_click=lambda: _advance())
+    st.button("Start scoring", type="primary", disabled=len(st.session_state.expert_name) == 0, on_click=lambda: _advance())
 
-def _advance(): st.session_state.page_idx += 1
-def _back(): st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
+def _advance():
+    st.session_state.page_idx += 1
+
+def _back():
+    st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
 
 def pair_page(k: int, ij: Tuple[int, int]):
-    i,j = ij
-    left,right = ROUTES[i], ROUTES[j]
+    i, j = ij
+    left, right = ROUTES[i], ROUTES[j]
+
     st.markdown(f"### **{i+1}. {left}**")
-    st.caption("Compare this route (left) with the one on the right.")
-    lcol, rcol = st.columns([1.6,1.4])
+    st.caption("Compare the importance (likelihood of occurrence) of the left transmission route with the right transmission route.")
+
+    lcol, rcol = st.columns([1.6, 1.4])
     with lcol:
         with st.container(border=True):
             st.markdown("**Left route**")
@@ -272,15 +287,17 @@ def pair_page(k: int, ij: Tuple[int, int]):
         with st.container(border=True):
             st.markdown("**Right route**")
             st.write(f"{j+1}. {right}")
-            score = st.selectbox("Score", range(1,10), index=0, key=f"s_{i}_{j}")
+            score = st.selectbox("Score (1–9)", range(1, 10), index=0, key=f"s_{i}_{j}")
             rec = st.checkbox("Reciprocal (if RIGHT route is more important)", key=f"r_{i}_{j}")
-            st.session_state.pairs_values[(i,j)] = 1/score if rec else float(score)
+            st.session_state.pairs_values[(i, j)] = 1 / score if rec else float(score)
             st.caption("Stored value:")
             st.write(f"**{1/score if rec else score:.3f}**")
     st.divider()
-    c1,_,c3 = st.columns([1,4,1])
-    with c1: st.button("Back", on_click=_back)
-    with c3: st.button("Next", type="primary", on_click=_advance)
+    c1, _, c3 = st.columns([1, 4, 1])
+    with c1:
+        st.button("Back", on_click=_back)
+    with c3:
+        st.button("Next", type="primary", on_click=_advance)
 
 def finish_page():
     st.header("Finish")
@@ -322,7 +339,7 @@ pairs = pairs_seq
 if page_idx == 0:
     intro_page()
 elif 1 <= page_idx <= len(pairs):
-    st.progress(page_idx/len(pairs), f"Pair {page_idx} of {len(pairs)}")
-    pair_page(page_idx, pairs[page_idx-1])
+    st.progress(page_idx / len(pairs), f"Pair {page_idx} of {len(pairs)}")
+    pair_page(page_idx, pairs[page_idx - 1])
 else:
     finish_page()
