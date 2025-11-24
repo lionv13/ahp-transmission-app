@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-HPAI Transmission Routes – AHP (Importance only)
+ASF Transmission Routes – AHP (Importance only)
 Wizard: Intro → one page per pairwise comparison → Finish & Export
 
 Includes:
@@ -9,7 +9,7 @@ Includes:
 - Optional Draft Excel (fills missing pairs with 1)
 - Final export with automatic email sending
 
-Run: streamlit run app.py
+Run: streamlit run app_asf.py
 """
 
 from __future__ import annotations
@@ -20,23 +20,25 @@ import pandas as pd
 import streamlit as st
 
 # ============================== CONFIG =============================== #
-st.set_page_config(page_title="HPAI Transmission Routes – Importance", layout="wide")
+st.set_page_config(page_title="ASF Transmission Routes – Importance", layout="wide")
 
 ROUTES: List[str] = [
-    "Introduction of virus through introduction of day old chick",
-    "Introduction of virus trough animal transport vehicle / equipment",
-    "Introduction of virus through professional visitors at the farm (vet, truck driver, catching team)",
-    "Introduction of virus through feed trucks",
-    "Introduction of virus through vermin or birds",
-    "Introduction of virus through water",
-    "Introduction of virus through truck of the rendering company",
-    "Introduction of virus through shared equipment",
-    "Introduction of virus through other farm animals",
-    "Introduction of virus through the air over short distance (<1000m)",
-    "Introduction of virus through spreading of manure originating from infected farms in close vicinity of the farm",
+    "Introduction of ASF virus through breeding pigs, weaned piglets and semen",
+    "Introduction of ASF virus through wild boar in the neighbourhood",
+    "Introduction of ASF virus through persons (farmer, vet, truck driver, ...)",
+    "Introduction of ASF virus through equipment",
+    "Introduction of ASF virus through animal transport vehicle / equipment",
+    "Introduction of ASF virus through feed trucks",
+    "Introduction of ASF virus through feed",
+    "Introduction of ASF virus through water",
+    "Introduction of ASF virus through the air over short distance (<1000m)",
+    "Introduction of ASF virus through other animals (pets, cattle, …)",
+    "Introduction of ASF virus through truck of the rendering company",
+    "Introduction of ASF virus through manure from other farms (hoses, manure spread in neighbourhood)",
+    "Introduction of ASF virus through vermin and birds",
 ]
 N = len(ROUTES)
-APP_VERSION = "1.4-instructions-refined"
+APP_VERSION = "ASF-1.0-importance"
 
 # Saaty Random Index (for CR)
 SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
@@ -198,7 +200,7 @@ with st.sidebar:
     st.subheader("💾 Save / Resume progress")
     st.caption("If you cannot complete the evaluation in one session, save your progress and resume later.")
     st.download_button("⬇️ Save draft (JSON)", serialize_draft().encode(),
-                       "hpai_ahp_draft.json", "application/json", use_container_width=True)
+                       "asf_ahp_draft.json", "application/json", use_container_width=True)
     uploaded = st.file_uploader("Load draft", type="json")
     if uploaded:
         load_draft(uploaded.read().decode())
@@ -206,14 +208,14 @@ with st.sidebar:
     if st.toggle("Generate Draft Excel (fill missing with 1)", value=False):
         try:
             data = build_excel_draft(st.session_state.expert_name or "Anonymous", st.session_state.pairs_values)
-            st.download_button("⬇️ Download Draft Excel", data, "HPAI_AHP_DRAFT.xlsx",
+            st.download_button("⬇️ Download Draft Excel", data, "ASF_AHP_DRAFT.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         except Exception as e:
             st.error(f"Draft error: {e}")
 
 # =============================== UI ================================= #
 def intro_page():
-    st.title("HPAI Transmission Routes")
+    st.title("ASF Transmission Routes")
     st.markdown("### Importance (Score 1–9)")
 
     st.markdown(
@@ -221,7 +223,7 @@ def intro_page():
 ## 🧭 Instructions for completing the evaluation
 
 1. **To start the evaluation**, click on **Start scoring** below.  
-2. You will see **pairs of transmission routes**.  
+2. You will see **pairs of ASF transmission routes**.  
    For **each pair**, assign a **score (1–9)** following the scale explained below:
    - **1** → no difference between the two routes.  
    - **3, 5, 7** → moderate, strong, and very strong difference (left > right).  
@@ -312,7 +314,7 @@ def finish_page():
         return
     st.divider()
     name = st.session_state.expert_name.replace(" ", "_")
-    filename = f"HPAI_AHP_Importance_{name}.xlsx"
+    filename = f"ASF_AHP_Importance_{name}.xlsx"
     col1, col2 = st.columns(2)
     with col1:
         st.download_button("⬇️ Download Excel results", excel, filename,
@@ -321,8 +323,13 @@ def finish_page():
         to = st.secrets.get("smtp", {}).get("report_to", "")
         if to and st.button(f"📤 Send results to {to}", type="primary"):
             try:
-                subj = f"HPAI AHP Results – {st.session_state.expert_name}"
-                body = f"Dear team,\n\nAttached are the AHP Importance results.\nExpert: {st.session_state.expert_name}\n\nBest regards."
+                subj = f"ASF AHP Results – {st.session_state.expert_name}"
+                body = (
+                    "Dear team,\n\n"
+                    "Attached are the AHP Importance results for ASF transmission routes.\n"
+                    f"Expert: {st.session_state.expert_name}\n\n"
+                    "Best regards."
+                )
                 send_results_email(to, subj, body, excel, filename)
                 st.success("Results sent successfully.")
             except Exception as e:
