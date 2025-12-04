@@ -27,7 +27,7 @@ ROUTES: List[str] = [
     "Introduction of ASF virus through wild boar in the neighbourhood",
     "Introduction of ASF virus through persons (farmer, vet, truck driver, ...)",
     "Introduction of ASF virus through equipment",
-    "Introduction of ASF virus through animal transport vehicle / equipment",
+    "Introduction of ASF virus through animal transport vehicle / tools",
     "Introduction of ASF virus through feed trucks",
     "Introduction of ASF virus through feed",
     "Introduction of ASF virus through water",
@@ -41,8 +41,11 @@ N = len(ROUTES)
 APP_VERSION = "ASF-1.0-importance"
 
 # Saaty Random Index (for CR)
-SAATY_RI = {1:0.00, 2:0.00, 3:0.58, 4:0.90, 5:1.12, 6:1.24, 7:1.32, 8:1.41,
-            9:1.45, 10:1.49, 11:1.51, 12:1.48, 13:1.56, 14:1.57, 15:1.59}
+SAATY_RI = {
+    1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12,
+    6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49,
+    11: 1.51, 12: 1.48, 13: 1.56, 14: 1.57, 15: 1.59
+}
 
 # ============================= HELPERS =============================== #
 def all_pairs(n: int) -> List[Tuple[int, int]]:
@@ -102,7 +105,8 @@ def get_mailer():
     s.login(user, password)
     return s, user
 
-def send_results_email(to_email: str, subject: str, body: str, attachment_bytes: bytes, filename: str):
+def send_results_email(to_email: str, subject: str, body: str,
+                       attachment_bytes: bytes, filename: str):
     from email.message import EmailMessage
     smtp, sender = get_mailer()
     msg = EmailMessage()
@@ -110,10 +114,12 @@ def send_results_email(to_email: str, subject: str, body: str, attachment_bytes:
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
-    msg.add_attachment(attachment_bytes,
+    msg.add_attachment(
+        attachment_bytes,
         maintype="application",
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=filename)
+        filename=filename
+    )
     smtp.send_message(msg)
 
 # ============================ EXCEL BUILDERS ============================ #
@@ -127,19 +133,22 @@ def build_excel(expert_name: str, pairs: Dict[Tuple[int, int], float]) -> bytes:
     df["Importance_w (%)"] = df["Importance_w"] * 100
     df["Risk_w (%)"] = df["Risk_w"] * 100
     df = df.sort_values("Rank_Risk").reset_index(drop=True)
+
     buf = io.BytesIO()
     engine = get_excel_engine()
     with pd.ExcelWriter(buf, engine=engine) as wtr:
         df.to_excel(wtr, "Results", index=False)
-        pd.DataFrame({"Criterion": ["Importance"], "λmax": [lam], "CI": [CI], "CR": [CR]}).to_excel(
-            wtr, "Consistency", index=False
-        )
+        pd.DataFrame(
+            {"Criterion": ["Importance"], "λmax": [lam], "CI": [CI], "CR": [CR]}
+        ).to_excel(wtr, "Consistency", index=False)
         pd.DataFrame(
             M,
             index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
             columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
         ).to_excel(wtr, "Matrix")
-        pd.DataFrame({"Expert": [expert_name], "Version": [APP_VERSION]}).to_excel(wtr, "Meta", index=False)
+        pd.DataFrame(
+            {"Expert": [expert_name], "Version": [APP_VERSION]}
+        ).to_excel(wtr, "Meta", index=False)
     buf.seek(0)
     return buf.read()
 
@@ -148,6 +157,7 @@ def build_excel_draft(expert_name: str, pairs_partial: Dict[Tuple[int, int], flo
     CR, CI, lam, w = consistency_ratio(M)
     df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": w})
     df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
+
     buf = io.BytesIO()
     engine = get_excel_engine()
     with pd.ExcelWriter(buf, engine=engine) as wtr:
@@ -169,6 +179,8 @@ if "expert_name" not in st.session_state:
     st.session_state.expert_name = ""
 if "expert_credentials" not in st.session_state:
     st.session_state.expert_credentials = ""
+if "errors" not in st.session_state:
+    st.session_state.errors = {}
 
 pairs_seq = st.session_state.pairs_list
 page_idx = st.session_state.page_idx
@@ -199,17 +211,29 @@ def load_draft(txt: str):
 with st.sidebar:
     st.subheader("💾 Save / Resume progress")
     st.caption("If you cannot complete the evaluation in one session, save your progress and resume later.")
-    st.download_button("⬇️ Save draft (JSON)", serialize_draft().encode(),
-                       "asf_ahp_draft.json", "application/json", use_container_width=True)
+    st.download_button(
+        "⬇️ Save draft (JSON)",
+        serialize_draft().encode(),
+        "asf_ahp_draft.json",
+        "application/json",
+        use_container_width=True,
+    )
     uploaded = st.file_uploader("Load draft", type="json")
     if uploaded:
         load_draft(uploaded.read().decode())
     st.markdown("---")
     if st.toggle("Generate Draft Excel (fill missing with 1)", value=False):
         try:
-            data = build_excel_draft(st.session_state.expert_name or "Anonymous", st.session_state.pairs_values)
-            st.download_button("⬇️ Download Draft Excel", data, "ASF_AHP_DRAFT.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            data = build_excel_draft(
+                st.session_state.expert_name or "Anonymous",
+                st.session_state.pairs_values,
+            )
+            st.download_button(
+                "⬇️ Download Draft Excel",
+                data,
+                "ASF_AHP_DRAFT.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         except Exception as e:
             st.error(f"Draft error: {e}")
 
@@ -222,50 +246,62 @@ def intro_page():
         """
 ## 🧭 Instructions for completing the evaluation
 
-1. **To start the evaluation**, click on **Start scoring** below.  
-2. You will see **pairs of ASF transmission routes**.  
-   For **each pair**, assign a **score (1–9)** following the scale explained below:
+1. **Provide your expert ID / credentials** in the section below.  
+   This information is used **only for internal scientific purposes** and will be treated as **strictly confidential**.  
+2. Once your ID is entered, click on **Start scoring** to begin.  
+3. You will see **pairs of ASF transmission routes**. For **each pair**, assign a **score (1–9)** following the scale:
    - **1** → no difference between the two routes.  
    - **3, 5, 7** → moderate, strong, and very strong difference (left > right).  
    - **9** → extreme difference (left ≫ right).  
    - **2, 6, 8** → in-between values.  
    - If the **right route** is more important → **tick the “Reciprocal” box** (sets the value to 1/score).
-3. After scoring each pair, click **Next** to continue.  
-4. If you **cannot finish in one session**, open the left sidebar and:
+4. The score selector has a **default value of 0**.  
+   - **0 means “no score selected yet”**.  
+   - You **must choose a value from 1 to 9** before you can move to the next pair.
+5. If you **cannot finish in one session**, open the left sidebar and:
    - Click **“Save draft (JSON)”** to download your progress file.  
    - Later, reopen the app and **upload that file** to resume where you left off.
-5. Once you finish all comparisons:
+6. Once you finish all comparisons:
    - You’ll reach a **Finish page** where you can:
      - **Download** a copy of your results (Excel file).  
      - Click **“Send results”** — your answers will be automatically emailed to the evaluation team.
-6. Your results are saved only after you export or send them.
+7. Your results are saved only after you export or send them.
 
 ---
 
 <div style="padding:0.6rem 0.8rem; border-left:6px solid #444; background:#f7f7f7;">
-<b>Important:</b> Pick a <b>Score &gt; 1</b> if the left route is more important than the right.  
+<b>Important:</b> Always select a score between <b>1</b> and <b>9</b> before continuing.  
 Use the <b>Reciprocal</b> checkbox if the right route is more important.
 </div>
         """,
         unsafe_allow_html=True
     )
 
-    with st.expander("Show transmission routes", expanded=False):
-        for idx, r in enumerate(ROUTES, start=1):
-            st.write(f"**{idx}.** {r}")
+    # (Transmission routes have been intentionally removed from the intro page)
 
     st.divider()
     st.subheader("Expert identification")
     colA, colB = st.columns(2)
     with colA:
-        st.session_state.expert_name = st.text_input("Your name", value=st.session_state.expert_name).strip()
+        st.session_state.expert_name = st.text_input(
+            "Your expert ID / name",
+            value=st.session_state.expert_name
+        ).strip()
     with colB:
         st.session_state.expert_credentials = st.text_input(
-            "Your credentials / affiliation (optional)", value=st.session_state.expert_credentials
+            "Your credentials / affiliation (optional)",
+            value=st.session_state.expert_credentials
         ).strip()
 
+    st.caption("Your identification will be stored and handled confidentially for internal use only.")
+
     st.divider()
-    st.button("Start scoring", type="primary", disabled=len(st.session_state.expert_name) == 0, on_click=lambda: _advance())
+    st.button(
+        "Start scoring",
+        type="primary",
+        disabled=len(st.session_state.expert_name) == 0,
+        on_click=lambda: _advance()
+    )
 
 def _advance():
     st.session_state.page_idx += 1
@@ -273,12 +309,33 @@ def _advance():
 def _back():
     st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
 
+def _advance_pair(i: int, j: int):
+    score_key = f"s_{i}_{j}"
+    rec_key = f"r_{i}_{j}"
+    err_key = f"err_{i}_{j}"
+
+    score = st.session_state.get(score_key, 0)
+    rec = st.session_state.get(rec_key, False)
+
+    if score == 0:
+        # Do not advance; show error
+        st.session_state.errors[err_key] = "Please select a score between 1 and 9 before continuing."
+        return
+    else:
+        st.session_state.errors.pop(err_key, None)
+
+    value = 1 / score if rec else float(score)
+    st.session_state.pairs_values[(i, j)] = value
+    st.session_state.page_idx += 1
+
 def pair_page(k: int, ij: Tuple[int, int]):
     i, j = ij
     left, right = ROUTES[i], ROUTES[j]
 
     st.markdown(f"### **{i+1}. {left}**")
-    st.caption("Compare the importance (likelihood of occurrence) of the left transmission route with the right transmission route.")
+    st.caption(
+        "Compare the importance (likelihood of occurrence) of the left transmission route with the right transmission route."
+    )
 
     lcol, rcol = st.columns([1.6, 1.4])
     with lcol:
@@ -289,17 +346,39 @@ def pair_page(k: int, ij: Tuple[int, int]):
         with st.container(border=True):
             st.markdown("**Right route**")
             st.write(f"{j+1}. {right}")
-            score = st.selectbox("Score (1–9)", range(1, 10), index=0, key=f"s_{i}_{j}")
-            rec = st.checkbox("Reciprocal (if RIGHT route is more important)", key=f"r_{i}_{j}")
-            st.session_state.pairs_values[(i, j)] = 1 / score if rec else float(score)
-            st.caption("Stored value:")
-            st.write(f"**{1/score if rec else score:.3f}**")
+            score = st.selectbox(
+                "Score (0–9)",
+                options=list(range(0, 10)),
+                key=f"s_{i}_{j}",
+                format_func=lambda x: "0 – please select" if x == 0 else str(x),
+            )
+            rec = st.checkbox(
+                "Reciprocal (if RIGHT route is more important)",
+                key=f"r_{i}_{j}"
+            )
+
+            if score != 0:
+                stored_value = 1 / score if rec else float(score)
+                st.caption("Stored value:")
+                st.write(f"**{stored_value:.3f}**")
+            else:
+                st.caption("Stored value: please select a score (1–9).")
+
+    # Show error if user tried to advance without selecting a score
+    err_key = f"err_{i}_{j}"
+    if err_key in st.session_state.errors:
+        st.error(st.session_state.errors[err_key])
+
     st.divider()
     c1, _, c3 = st.columns([1, 4, 1])
     with c1:
         st.button("Back", on_click=_back)
     with c3:
-        st.button("Next", type="primary", on_click=_advance)
+        st.button(
+            "Next",
+            type="primary",
+            on_click=lambda: _advance_pair(i, j)
+        )
 
 def finish_page():
     st.header("Finish")
@@ -312,13 +391,18 @@ def finish_page():
     except Exception as e:
         st.error(f"Error computing results: {e}")
         return
+
     st.divider()
     name = st.session_state.expert_name.replace(" ", "_")
     filename = f"ASF_AHP_Importance_{name}.xlsx"
     col1, col2 = st.columns(2)
     with col1:
-        st.download_button("⬇️ Download Excel results", excel, filename,
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            "⬇️ Download Excel results",
+            excel,
+            filename,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     with col2:
         to = st.secrets.get("smtp", {}).get("report_to", "")
         if to and st.button(f"📤 Send results to {to}", type="primary"):
@@ -334,19 +418,22 @@ def finish_page():
                 st.success("Results sent successfully.")
             except Exception as e:
                 st.error(f"Email failed: {e}")
+
     st.divider()
     st.button("Start over", on_click=lambda: _reset())
 
 def _reset():
     st.session_state.page_idx = 0
     st.session_state.pairs_values = {}
+    st.session_state.errors = {}
 
 # =========================== PAGE ROUTER =========================== #
 pairs = pairs_seq
 if page_idx == 0:
     intro_page()
 elif 1 <= page_idx <= len(pairs):
-    st.progress(page_idx / len(pairs), f"Pair {page_idx} of {len(pairs)}")
+    # Progress bar only (no "Pair X of Y" text)
+    st.progress(page_idx / len(pairs))
     pair_page(page_idx, pairs[page_idx - 1])
 else:
     finish_page()
