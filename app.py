@@ -277,7 +277,7 @@ Use the <b>Reciprocal</b> checkbox if the right route is more important.
         unsafe_allow_html=True
     )
 
-    # (Transmission routes have been intentionally removed from the intro page)
+    # Transmission routes intentionally removed from the intro page
 
     st.divider()
     st.subheader("Expert identification")
@@ -357,12 +357,17 @@ def pair_page(k: int, ij: Tuple[int, int]):
                 key=f"r_{i}_{j}"
             )
 
+            # Show current selection (even if not yet saved)
             if score != 0:
-                stored_value = 1 / score if rec else float(score)
-                st.caption("Stored value:")
-                st.write(f"**{stored_value:.3f}**")
+                current_value = 1 / score if rec else float(score)
+                st.caption(f"Current selection: **{current_value:.3f}**")
             else:
-                st.caption("Stored value: please select a score (1–9).")
+                st.caption("Current selection: please select a score (1–9).")
+
+            # Show stored value (value saved when Next was pressed)
+            if (i, j) in st.session_state.pairs_values:
+                stored = st.session_state.pairs_values[(i, j)]
+                st.caption(f"Previously saved value: **{stored:.3f}**")
 
     # Show error if user tried to advance without selecting a score
     err_key = f"err_{i}_{j}"
