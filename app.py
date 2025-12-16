@@ -36,7 +36,7 @@ ROUTES: List[str] = [
     "Introduction of ASF virus through other animals (pets, cattle, …)",
     "Introduction of ASF virus through truck of the rendering company",
     "Introduction of ASF virus through manure from other farms (hoses, manure spread in neighbourhood)",
-    "Introduction of ASF virus through vermin and birds",
+    "Introduction of ASF virus through vermin, birds, and insects",
 ]
 N = len(ROUTES)
 APP_VERSION = "ASF-1.0-importance"
