@@ -13,8 +13,11 @@ Run: streamlit run app_asf.py
 """
 
 from __future__ import annotations
-import io, json
+
+import io
+import json
 from typing import Dict, Tuple, List
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -23,249 +26,275 @@ import streamlit as st
 st.set_page_config(page_title="ASF Transmission Routes – Importance", layout="wide")
 
 ROUTES: List[str] = [
-"Introduction of ASF virus through breeding pigs, weaned piglets and semen",
-"Introduction of ASF virus through wild boar in the neighbourhood",
-"Introduction of ASF virus through persons (farmer, vet, truck driver, ...)",
-"Introduction of ASF virus through equipment",
-"Introduction of ASF virus through animal transport vehicle / tools",
-"Introduction of ASF virus through feed trucks",
-"Introduction of ASF virus through swill feeding",
-"Introduction of ASF virus through regular feeding",
-"Introduction of ASF virus through water",
-"Introduction of ASF virus through the air over short distance (<1000m)",
-"Introduction of ASF virus through other animals (pets, cattle, …)",
-"Introduction of ASF virus through truck of the rendering company",
-"Introduction of ASF virus through manure from other farms (hoses, manure spread in neighbourhood)",
-"Introduction of ASF virus through vermin, birds, and insects",
+    "Introduction of ASF virus through breeding pigs, weaned piglets and semen",
+    "Introduction of ASF virus through wild boar in the neighbourhood",
+    "Introduction of ASF virus through persons (farmer, vet, truck driver, ...)",
+    "Introduction of ASF virus through equipment",
+    "Introduction of ASF virus through animal transport vehicle / tools",
+    "Introduction of ASF virus through feed trucks",
+    "Introduction of ASF virus through swill feeding",
+    "Introduction of ASF virus through regular feeding",
+    "Introduction of ASF virus through water",
+    "Introduction of ASF virus through the air over short distance (<1000m)",
+    "Introduction of ASF virus through other animals (pets, cattle, …)",
+    "Introduction of ASF virus through truck of the rendering company",
+    "Introduction of ASF virus through manure from other farms (hoses, manure spread in neighbourhood)",
+    "Introduction of ASF virus through vermin, birds, and insects",
 ]
 N = len(ROUTES)
 APP_VERSION = "ASF-1.0-importance"
 
 # Saaty Random Index (for CR)
 SAATY_RI = {
-1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12,
-6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49,
-11: 1.51, 12: 1.48, 13: 1.56, 14: 1.57, 15: 1.59
+    1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12,
+    6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49,
+    11: 1.51, 12: 1.48, 13: 1.56, 14: 1.57, 15: 1.59
 }
 
 # ============================= HELPERS =============================== #
 def all_pairs(n: int) -> List[Tuple[int, int]]:
-return [(i, j) for i in range(n - 1) for j in range(i + 1, n)]
+    return [(i, j) for i in range(n - 1) for j in range(i + 1, n)]
+
 
 @st.cache_data(show_spinner=False)
 def matrix_from_upper_triangle(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
-M = np.ones((n, n), dtype=float)
-for (i, j), v in pairs.items():
-M[i, j] = float(v)
-M[j, i] = 1.0 / float(v)
-return M
+    M = np.ones((n, n), dtype=float)
+    for (i, j), v in pairs.items():
+        M[i, j] = float(v)
+        M[j, i] = 1.0 / float(v)
+    return M
+
 
 def matrix_from_upper_triangle_allow_missing(n: int, pairs: Dict[Tuple[int, int], float]) -> np.ndarray:
-M = np.ones((n, n), dtype=float)
-for i in range(n - 1):
-for j in range(i + 1, n):
-val = float(pairs.get((i, j), 1.0))
-M[i, j] = val
-M[j, i] = 1.0 / val
-return M
+    M = np.ones((n, n), dtype=float)
+    for i in range(n - 1):
+        for j in range(i + 1, n):
+            val = float(pairs.get((i, j), 1.0))
+            M[i, j] = val
+            M[j, i] = 1.0 / val
+    return M
+
 
 @st.cache_data(show_spinner=False)
 def eigen_priority(M: np.ndarray):
-vals, vecs = np.linalg.eig(M)
-idx = np.argmax(vals.real)
-w = np.abs(vecs[:, idx].real)
-return w / w.sum(), float(vals[idx].real)
+    vals, vecs = np.linalg.eig(M)
+    idx = np.argmax(vals.real)
+    w = np.abs(vecs[:, idx].real)
+    return w / w.sum(), float(vals[idx].real)
+
 
 @st.cache_data(show_spinner=False)
 def consistency_ratio(M: np.ndarray):
-n = M.shape[0]
-w, lam = eigen_priority(M)
-CI = (lam - n) / (n - 1) if n > 1 else 0.0
-RI = SAATY_RI.get(n, 1.59)
-CR = CI / RI if RI > 0 else 0.0
-return CR, CI, lam, w
+    n = M.shape[0]
+    w, lam = eigen_priority(M)
+    CI = (lam - n) / (n - 1) if n > 1 else 0.0
+    RI = SAATY_RI.get(n, 1.59)
+    CR = CI / RI if RI > 0 else 0.0
+    return CR, CI, lam, w
+
 
 @st.cache_resource(show_spinner=False)
 def get_excel_engine() -> str:
-try:
-import openpyxl  # noqa
-return "openpyxl"
-except Exception:
-import xlsxwriter
-return "xlsxwriter"
+    try:
+        import openpyxl  # noqa
+        return "openpyxl"
+    except Exception:
+        import xlsxwriter  # noqa
+        return "xlsxwriter"
 
-@st.cache_resource(show_spinner=False)
-def get_mailer():
-import smtplib
-host = st.secrets["smtp"]["host"]
-port = int(st.secrets["smtp"].get("port", 587))
-user = st.secrets["smtp"]["user"]
-password = st.secrets["smtp"]["password"]
-s = smtplib.SMTP(host, port, timeout=30)
-s.starttls()
-s.login(user, password)
-return s, user
 
-def send_results_email(to_email: str, subject: str, body: str,
-attachment_bytes: bytes, filename: str):
-from email.message import EmailMessage
-smtp, sender = get_mailer()
-msg = EmailMessage()
-msg["From"] = sender
-msg["To"] = to_email
-msg["Subject"] = subject
-msg.set_content(body)
-msg.add_attachment(
-attachment_bytes,
-maintype="application",
-subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-filename=filename
-)
-smtp.send_message(msg)
+# ============================= EMAIL (FIXED) =============================== #
+# NOTE: Do NOT cache SMTP connections in Streamlit (causes "please run connect() first")
+def send_results_email(
+    to_email: str,
+    subject: str,
+    body: str,
+    attachment_bytes: bytes,
+    filename: str,
+):
+    import smtplib
+    from email.message import EmailMessage
+
+    host = st.secrets["smtp"]["host"]
+    port = int(st.secrets["smtp"].get("port", 587))
+    user = st.secrets["smtp"]["user"]
+    password = st.secrets["smtp"]["password"]
+    use_tls = bool(st.secrets["smtp"].get("use_tls", True))
+    from_email = st.secrets["smtp"].get("from_email", user)
+
+    msg = EmailMessage()
+    msg["From"] = from_email
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+    msg.add_attachment(
+        attachment_bytes,
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
+
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        smtp.ehlo()
+        if use_tls:
+            smtp.starttls()
+            smtp.ehlo()
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
 
 # ============================ EXCEL BUILDERS ============================ #
 def build_excel(expert_name: str, pairs: Dict[Tuple[int, int], float]) -> bytes:
-M = matrix_from_upper_triangle(N, pairs)
-CR, CI, lam, w = consistency_ratio(M)
-risk = w / np.sum(w)
-df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": risk})
-df["Rank_Importance"] = df["Importance_w"].rank(ascending=False).astype(int)
-df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
-df["Importance_w (%)"] = df["Importance_w"] * 100
-df["Risk_w (%)"] = df["Risk_w"] * 100
-df = df.sort_values("Rank_Risk").reset_index(drop=True)
+    M = matrix_from_upper_triangle(N, pairs)
+    CR, CI, lam, w = consistency_ratio(M)
+    risk = w / np.sum(w)
 
-buf = io.BytesIO()
-engine = get_excel_engine()
-with pd.ExcelWriter(buf, engine=engine) as wtr:
-df.to_excel(wtr, "Results", index=False)
-pd.DataFrame(
-{"Criterion": ["Importance"], "λmax": [lam], "CI": [CI], "CR": [CR]}
-).to_excel(wtr, "Consistency", index=False)
-pd.DataFrame(
-M,
-index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
-columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
-).to_excel(wtr, "Matrix")
-pd.DataFrame(
-{"Expert": [expert_name], "Version": [APP_VERSION]}
-).to_excel(wtr, "Meta", index=False)
-buf.seek(0)
-return buf.read()
+    df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": risk})
+    df["Rank_Importance"] = df["Importance_w"].rank(ascending=False).astype(int)
+    df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
+    df["Importance_w (%)"] = df["Importance_w"] * 100
+    df["Risk_w (%)"] = df["Risk_w"] * 100
+    df = df.sort_values("Rank_Risk").reset_index(drop=True)
+
+    buf = io.BytesIO()
+    engine = get_excel_engine()
+    with pd.ExcelWriter(buf, engine=engine) as wtr:
+        df.to_excel(wtr, "Results", index=False)
+        pd.DataFrame(
+            {"Criterion": ["Importance"], "λmax": [lam], "CI": [CI], "CR": [CR]}
+        ).to_excel(wtr, "Consistency", index=False)
+
+        pd.DataFrame(
+            M,
+            index=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+            columns=[f"{i+1}. {r}" for i, r in enumerate(ROUTES)],
+        ).to_excel(wtr, "Matrix")
+
+        pd.DataFrame({"Expert": [expert_name], "Version": [APP_VERSION]}).to_excel(
+            wtr, "Meta", index=False
+        )
+
+    buf.seek(0)
+    return buf.read()
+
 
 def build_excel_draft(expert_name: str, pairs_partial: Dict[Tuple[int, int], float]) -> bytes:
-M = matrix_from_upper_triangle_allow_missing(N, pairs_partial)
-CR, CI, lam, w = consistency_ratio(M)
-df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": w})
-df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
+    M = matrix_from_upper_triangle_allow_missing(N, pairs_partial)
+    CR, CI, lam, w = consistency_ratio(M)
 
-buf = io.BytesIO()
-engine = get_excel_engine()
-with pd.ExcelWriter(buf, engine=engine) as wtr:
-df.to_excel(wtr, "Results (DRAFT)", index=False)
-pd.DataFrame(
-{"Note": ["Some pairs missing, set to 1"], "λmax": [lam], "CI": [CI], "CR": [CR]}
-).to_excel(wtr, "Consistency", index=False)
-buf.seek(0)
-return buf.read()
+    df = pd.DataFrame({"Route": ROUTES, "Importance_w": w, "Risk_w": w})
+    df["Rank_Risk"] = df["Risk_w"].rank(ascending=False).astype(int)
+
+    buf = io.BytesIO()
+    engine = get_excel_engine()
+    with pd.ExcelWriter(buf, engine=engine) as wtr:
+        df.to_excel(wtr, "Results (DRAFT)", index=False)
+        pd.DataFrame(
+            {"Note": ["Some pairs missing, set to 1"], "λmax": [lam], "CI": [CI], "CR": [CR]}
+        ).to_excel(wtr, "Consistency", index=False)
+
+    buf.seek(0)
+    return buf.read()
+
 
 # ============================ STATE SETUP ============================ #
 if "page_idx" not in st.session_state:
-st.session_state.page_idx = 0
+    st.session_state.page_idx = 0
 if "pairs_list" not in st.session_state:
-st.session_state.pairs_list = all_pairs(N)
+    st.session_state.pairs_list = all_pairs(N)
 if "pairs_values" not in st.session_state:
-st.session_state.pairs_values = {}
+    st.session_state.pairs_values = {}
 if "expert_name" not in st.session_state:
-st.session_state.expert_name = ""
+    st.session_state.expert_name = ""
 if "expert_credentials" not in st.session_state:
-st.session_state.expert_credentials = ""
+    st.session_state.expert_credentials = ""
 if "errors" not in st.session_state:
-st.session_state.errors = {}
+    st.session_state.errors = {}
 
 pairs_seq = st.session_state.pairs_list
 page_idx = st.session_state.page_idx
 
 # =========================== DRAFT SAVE/LOAD =========================== #
 def serialize_draft() -> str:
-data = {
-"v": APP_VERSION,
-"name": st.session_state.expert_name,
-"cred": st.session_state.expert_credentials,
-"page": st.session_state.page_idx,
-"pairs": {f"{i},{j}": v for (i, j), v in st.session_state.pairs_values.items()},
-}
-return json.dumps(data, indent=2)
+    data = {
+        "v": APP_VERSION,
+        "name": st.session_state.expert_name,
+        "cred": st.session_state.expert_credentials,
+        "page": st.session_state.page_idx,
+        "pairs": {f"{i},{j}": v for (i, j), v in st.session_state.pairs_values.items()},
+    }
+    return json.dumps(data, indent=2)
+
 
 def load_draft(txt: str):
-d = json.loads(txt)
-st.session_state.expert_name = d.get("name", "")
-st.session_state.expert_credentials = d.get("cred", "")
-st.session_state.page_idx = d.get("page", 0)
-pairs = {}
-for k, v in d.get("pairs", {}).items():
-i, j = map(int, k.split(","))
-pairs[(i, j)] = float(v)
-st.session_state.pairs_values = pairs
-st.success("Draft loaded successfully.")
+    d = json.loads(txt)
+    st.session_state.expert_name = d.get("name", "")
+    st.session_state.expert_credentials = d.get("cred", "")
+    st.session_state.page_idx = d.get("page", 0)
+    pairs = {}
+    for k, v in d.get("pairs", {}).items():
+        i, j = map(int, k.split(","))
+        pairs[(i, j)] = float(v)
+    st.session_state.pairs_values = pairs
+    st.success("Draft loaded successfully.")
+
 
 with st.sidebar:
-st.subheader("💾 Save / Resume progress")
-st.caption("If you cannot complete the evaluation in one session, save your progress and resume later.")
-st.download_button(
-"⬇️ Save draft (JSON)",
-serialize_draft().encode(),
-"asf_ahp_draft.json",
-"application/json",
-use_container_width=True,
-)
-uploaded = st.file_uploader("Load draft", type="json")
-if uploaded:
-load_draft(uploaded.read().decode())
-st.markdown("---")
-if st.toggle("Generate Draft Excel (fill missing with 1)", value=False):
-try:
-data = build_excel_draft(
-st.session_state.expert_name or "Anonymous",
-st.session_state.pairs_values,
-)
-st.download_button(
-"⬇️ Download Draft Excel",
-data,
-"ASF_AHP_DRAFT.xlsx",
-"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-except Exception as e:
-st.error(f"Draft error: {e}")
+    st.subheader("💾 Save / Resume progress")
+    st.caption("If you cannot complete the evaluation in one session, save your progress and resume later.")
+    st.download_button(
+        "⬇️ Save draft (JSON)",
+        serialize_draft().encode(),
+        "asf_ahp_draft.json",
+        "application/json",
+        use_container_width=True,
+    )
+    uploaded = st.file_uploader("Load draft", type="json")
+    if uploaded:
+        load_draft(uploaded.read().decode())
+
+    st.markdown("---")
+    if st.toggle("Generate Draft Excel (fill missing with 1)", value=False):
+        try:
+            data = build_excel_draft(st.session_state.expert_name or "Anonymous", st.session_state.pairs_values)
+            st.download_button(
+                "⬇️ Download Draft Excel",
+                data,
+                "ASF_AHP_DRAFT.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception as e:
+            st.error(f"Draft error: {e}")
+
 
 # =============================== UI ================================= #
 def intro_page():
-st.title("ASF Transmission Routes")
-st.markdown("### Importance (Score 1–9)")
+    st.title("ASF Transmission Routes")
+    st.markdown("### Importance (Score 1–9)")
 
-st.markdown(
-"""
+    st.markdown(
+        """
 ## 🧭 Instructions for completing the evaluation
 
 1. **Provide your expert ID / credentials** in the section below.  
-  This information is used **only for internal scientific purposes** and will be treated as **strictly confidential**.  
+   This information is used **only for internal scientific purposes** and will be treated as **strictly confidential**.  
 2. Once your ID is entered, click on **Start scoring** to begin.  
 3. You will see **pairs of ASF transmission routes**. For **each pair**, assign a **score (1–9)** following the scale:
-  - **1** → no difference between the two routes.  
-  - **3, 5, 7** → moderate, strong, and very strong difference (left > right).  
-  - **9** → extreme difference (left ≫ right).  
-  - **2, 6, 8** → in-between values.  
-  - If the **right route** is more important → **tick the “Reciprocal” box** (sets the value to 1/score).
+   - **1** → no difference between the two routes.  
+   - **3, 5, 7** → moderate, strong, and very strong difference (left > right).  
+   - **9** → extreme difference (left ≫ right).  
+   - **2, 6, 8** → in-between values.  
+   - If the **right route** is more important → **tick the “Reciprocal” box** (sets the value to 1/score).
 4. The score selector has a **default value of 0**.  
-  - **0 means “no score selected yet”**.  
-  - You **must choose a value from 1 to 9** before you can move to the next pair.
+   - **0 means “no score selected yet”**.  
+   - You **must choose a value from 1 to 9** before you can move to the next pair.
 5. If you **cannot finish in one session**, open the left sidebar and:
-  - Click **“Save draft (JSON)”** to download your progress file.  
-  - Later, reopen the app and **upload that file** to resume where you left off.
+   - Click **“Save draft (JSON)”** to download your progress file.  
+   - Later, reopen the app and **upload that file** to resume where you left off.
 6. Once you finish all comparisons:
-  - You’ll reach a **Finish page** where you can:
-    - **Download** a copy of your results (Excel file).  
-    - Click **“Send results”** — your answers will be automatically emailed to the evaluation team.
+   - You’ll reach a **Finish page** where you can:
+     - **Download** a copy of your results (Excel file).  
+     - Click **“Send results”** — your answers will be automatically emailed to the evaluation team.
 7. Your results are saved only after you export or send them.
 
 ---
@@ -274,100 +303,98 @@ st.markdown(
 <b>Important:</b> Always select a score between <b>1</b> and <b>9</b> before continuing.  
 Use the <b>Reciprocal</b> checkbox if the right route is more important.
 </div>
-       """,
-unsafe_allow_html=True
-)
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # (Transmission routes have been intentionally removed from the intro page)
     # Transmission routes intentionally removed from the intro page
 
-st.divider()
-st.subheader("Expert identification")
-colA, colB = st.columns(2)
-with colA:
-st.session_state.expert_name = st.text_input(
-"Your expert ID / name",
-value=st.session_state.expert_name
-).strip()
-with colB:
-st.session_state.expert_credentials = st.text_input(
-"Your credentials / affiliation (optional)",
-value=st.session_state.expert_credentials
-).strip()
+    st.divider()
+    st.subheader("Expert identification")
+    colA, colB = st.columns(2)
+    with colA:
+        st.session_state.expert_name = st.text_input(
+            "Your expert ID / name",
+            value=st.session_state.expert_name
+        ).strip()
+    with colB:
+        st.session_state.expert_credentials = st.text_input(
+            "Your credentials / affiliation (optional)",
+            value=st.session_state.expert_credentials
+        ).strip()
 
-st.caption("Your identification will be stored and handled confidentially for internal use only.")
+    st.caption("Your identification will be stored and handled confidentially for internal use only.")
 
-st.divider()
-st.button(
-"Start scoring",
-type="primary",
-disabled=len(st.session_state.expert_name) == 0,
-on_click=lambda: _advance()
-)
+    st.divider()
+    st.button(
+        "Start scoring",
+        type="primary",
+        disabled=len(st.session_state.expert_name) == 0,
+        on_click=lambda: _advance(),
+    )
+
 
 def _advance():
-st.session_state.page_idx += 1
+    st.session_state.page_idx += 1
+
 
 def _back():
-st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
+    st.session_state.page_idx = max(0, st.session_state.page_idx - 1)
+
 
 def _advance_pair(i: int, j: int):
-score_key = f"s_{i}_{j}"
-rec_key = f"r_{i}_{j}"
-err_key = f"err_{i}_{j}"
+    score_key = f"s_{i}_{j}"
+    rec_key = f"r_{i}_{j}"
+    err_key = f"err_{i}_{j}"
 
-score = st.session_state.get(score_key, 0)
-rec = st.session_state.get(rec_key, False)
+    score = st.session_state.get(score_key, 0)
+    rec = st.session_state.get(rec_key, False)
 
-if score == 0:
-# Do not advance; show error
-st.session_state.errors[err_key] = "Please select a score between 1 and 9 before continuing."
-return
-else:
-st.session_state.errors.pop(err_key, None)
+    if score == 0:
+        st.session_state.errors[err_key] = "Please select a score between 1 and 9 before continuing."
+        return
+    else:
+        st.session_state.errors.pop(err_key, None)
 
-value = 1 / score if rec else float(score)
-st.session_state.pairs_values[(i, j)] = value
-st.session_state.page_idx += 1
+    value = 1 / score if rec else float(score)
+    st.session_state.pairs_values[(i, j)] = value
+    st.session_state.page_idx += 1
+
 
 def pair_page(k: int, ij: Tuple[int, int]):
-i, j = ij
-left, right = ROUTES[i], ROUTES[j]
+    i, j = ij
+    left, right = ROUTES[i], ROUTES[j]
 
-st.markdown(f"### **{i+1}. {left}**")
-st.caption(
-"Compare the importance (likelihood of occurrence) of the left transmission route with the right transmission route."
-)
+    st.markdown(f"### **{i+1}. {left}**")
+    st.caption("Compare the importance (likelihood of occurrence) of the left transmission route with the right transmission route.")
 
-lcol, rcol = st.columns([1.6, 1.4])
-with lcol:
-with st.container(border=True):
-st.markdown("**Left route**")
-st.write(f"{i+1}. {left}")
-with rcol:
-with st.container(border=True):
-st.markdown("**Right route**")
-st.write(f"{j+1}. {right}")
-score = st.selectbox(
-"Score (0–9)",
-options=list(range(0, 10)),
-key=f"s_{i}_{j}",
-format_func=lambda x: "0 – please select" if x == 0 else str(x),
-)
-rec = st.checkbox(
-"Reciprocal (if RIGHT route is more important)",
-key=f"r_{i}_{j}"
-)
+    lcol, rcol = st.columns([1.6, 1.4])
+    with lcol:
+        with st.container(border=True):
+            st.markdown("**Left route**")
+            st.write(f"{i+1}. {left}")
+
+    with rcol:
+        with st.container(border=True):
+            st.markdown("**Right route**")
+            st.write(f"{j+1}. {right}")
+
+            score = st.selectbox(
+                "Score (0–9)",
+                options=list(range(0, 10)),
+                key=f"s_{i}_{j}",
+                format_func=lambda x: "0 – please select" if x == 0 else str(x),
+            )
+            rec = st.checkbox(
+                "Reciprocal (if RIGHT route is more important)",
+                key=f"r_{i}_{j}",
+            )
 
             # Show current selection (even if not yet saved)
-if score != 0:
-                stored_value = 1 / score if rec else float(score)
-                st.caption("Stored value:")
-                st.write(f"**{stored_value:.3f}**")
+            if score != 0:
                 current_value = 1 / score if rec else float(score)
                 st.caption(f"Current selection: **{current_value:.3f}**")
-else:
-                st.caption("Stored value: please select a score (1–9).")
+            else:
                 st.caption("Current selection: please select a score (1–9).")
 
             # Show stored value (value saved when Next was pressed)
@@ -375,76 +402,76 @@ else:
                 stored = st.session_state.pairs_values[(i, j)]
                 st.caption(f"Previously saved value: **{stored:.3f}**")
 
-# Show error if user tried to advance without selecting a score
-err_key = f"err_{i}_{j}"
-if err_key in st.session_state.errors:
-st.error(st.session_state.errors[err_key])
+    err_key = f"err_{i}_{j}"
+    if err_key in st.session_state.errors:
+        st.error(st.session_state.errors[err_key])
 
-st.divider()
-c1, _, c3 = st.columns([1, 4, 1])
-with c1:
-st.button("Back", on_click=_back)
-with c3:
-st.button(
-"Next",
-type="primary",
-on_click=lambda: _advance_pair(i, j)
-)
+    st.divider()
+    c1, _, c3 = st.columns([1, 4, 1])
+    with c1:
+        st.button("Back", on_click=_back)
+    with c3:
+        st.button("Next", type="primary", on_click=lambda: _advance_pair(i, j))
+
 
 def finish_page():
-st.header("Finish")
-st.success("You have completed all pairwise comparisons.")
-try:
-excel = build_excel(st.session_state.expert_name, st.session_state.pairs_values)
-df = pd.read_excel(io.BytesIO(excel), sheet_name="Results")
-st.subheader("Preview of results")
-st.dataframe(df.head(10))
-except Exception as e:
-st.error(f"Error computing results: {e}")
-return
+    st.header("Finish")
+    st.success("You have completed all pairwise comparisons.")
+    try:
+        excel = build_excel(st.session_state.expert_name, st.session_state.pairs_values)
+        df = pd.read_excel(io.BytesIO(excel), sheet_name="Results")
+        st.subheader("Preview of results")
+        st.dataframe(df.head(10))
+    except Exception as e:
+        st.error(f"Error computing results: {e}")
+        return
 
-st.divider()
-name = st.session_state.expert_name.replace(" ", "_")
-filename = f"ASF_AHP_Importance_{name}.xlsx"
-col1, col2 = st.columns(2)
-with col1:
-st.download_button(
-"⬇️ Download Excel results",
-excel,
-filename,
-"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-with col2:
-to = st.secrets.get("smtp", {}).get("report_to", "")
-if to and st.button(f"📤 Send results to {to}", type="primary"):
-try:
-subj = f"ASF AHP Results – {st.session_state.expert_name}"
-body = (
-"Dear team,\n\n"
-"Attached are the AHP Importance results for ASF transmission routes.\n"
-f"Expert: {st.session_state.expert_name}\n\n"
-"Best regards."
-)
-send_results_email(to, subj, body, excel, filename)
-st.success("Results sent successfully.")
-except Exception as e:
-st.error(f"Email failed: {e}")
+    st.divider()
+    name = st.session_state.expert_name.replace(" ", "_")
+    filename = f"ASF_AHP_Importance_{name}.xlsx"
 
-st.divider()
-st.button("Start over", on_click=lambda: _reset())
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇️ Download Excel results",
+            excel,
+            filename,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    with col2:
+        to = st.secrets.get("smtp", {}).get("report_to", "")
+        if to and st.button(f"📤 Send results to {to}", type="primary"):
+            try:
+                subj = f"ASF AHP Results – {st.session_state.expert_name}"
+                body = (
+                    "Dear team,\n\n"
+                    "Attached are the AHP Importance results for ASF transmission routes.\n"
+                    f"Expert: {st.session_state.expert_name}\n\n"
+                    "Best regards."
+                )
+                send_results_email(to, subj, body, excel, filename)
+                st.success("Results sent successfully.")
+            except Exception as e:
+                st.error(f"Email failed: {e}")
+
+    st.divider()
+    st.button("Start over", on_click=lambda: _reset())
+
 
 def _reset():
-st.session_state.page_idx = 0
-st.session_state.pairs_values = {}
-st.session_state.errors = {}
+    st.session_state.page_idx = 0
+    st.session_state.pairs_values = {}
+    st.session_state.errors = {}
+
 
 # =========================== PAGE ROUTER =========================== #
 pairs = pairs_seq
 if page_idx == 0:
-intro_page()
+    intro_page()
 elif 1 <= page_idx <= len(pairs):
-# Progress bar only (no "Pair X of Y" text)
-st.progress(page_idx / len(pairs))
-pair_page(page_idx, pairs[page_idx - 1])
+    # Progress bar only (no "Pair X of Y" text)
+    st.progress(page_idx / len(pairs))
+    pair_page(page_idx, pairs[page_idx - 1])
 else:
-finish_page()
+    finish_page()
